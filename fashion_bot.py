@@ -26,6 +26,7 @@ from PIL import Image
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 
+print(os.getenv("TELEGRAM_TOKEN"))
 print("TELEGRAM_TOKEN:", TELEGRAM_TOKEN)
 print("GROQ_API_KEY:", GROQ_API_KEY)
 
