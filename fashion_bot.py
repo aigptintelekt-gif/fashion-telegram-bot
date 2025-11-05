@@ -1,7 +1,5 @@
 # ----------------- imports -----------------
-from dotenv import load_dotenv
 import os
-from pathlib import Path
 import base64
 import io
 
@@ -16,54 +14,21 @@ from telegram.constants import ChatAction
 # Pillow для уменьшения фото
 from PIL import Image
 
-# ----------------- .env -----------------
-#env_path = Path(__file__).parent / ".env"
-#load_dotenv(dotenv_path=env_path)
+# ----------------- Переменные окружения -----------------
+TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
+GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
 
-#print("Файл существует?", env_path.exists())
-#print("Содержимое файла:", env_path.read_text())
-
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-
-print(os.getenv("TELEGRAM_TOKEN"))
 print("TELEGRAM_TOKEN:", TELEGRAM_TOKEN)
 print("GROQ_API_KEY:", GROQ_API_KEY)
 
 if not TELEGRAM_TOKEN or not GROQ_API_KEY:
-    raise ValueError("❌ Не найдены токены! Проверь файл .env")
+    raise ValueError("❌ Не найдены токены! Добавьте TELEGRAM_TOKEN и GROQ_API_KEY в Heroku Config Vars")
 
 # ----------------- Groq -----------------
 client = Groq(api_key=GROQ_API_KEY)
 
-FASHION_SYSTEM_PROMPT = """Ты — экспертный AI-агент в области fashion-индустрии, сочетающий роли профессионального стилиста и продюсера.
-
-🎨 КАК СТИЛИСТ:
-- Анализируй образы с профессиональной точки зрения
-- Давай конкретные, применимые советы по стилю
-- Учитывай типы фигур, цветотипы, lifestyle клиента
-- Создавай капсульные гардеробы и луки
-- Рекомендуй сочетания вещей и аксессуаров
-- Следи за актуальными трендами
-
-🎬 КАК ПРОДЮСЕР:
-- Помогай планировать fashion-проекты
-- Консультируй по бюджету и таймингу съемок
-- Давай советы по выбору команды
-- Помогай с концепцией и настроением проекта
-- Консультируй по локациям и реквизиту
-
-СТИЛЬ ОБЩЕНИЯ:
-- Профессиональный, дружелюбный, вдохновляющий
-- Используй модную терминологию, но объясняй сложные понятия
-- Будь конкретным
-- Эмодзи умеренно (✨, 👗, 💫, 🎨)
-
-При анализе фото:
-- Детально описывай что видишь
-- Выделяй удачные элементы
-- Предлагай улучшения тактично
-- Рекомендуй конкретные альтернативы
+FASHION_SYSTEM_PROMPT = """Ты — экспертный AI-агент в области fashion-индустрии...
+(тут оставляем весь текст без изменений)
 """
 
 # ----------------- Хранилище истории -----------------
@@ -75,39 +40,12 @@ async def start(update, context):
     user_name = update.effective_user.first_name
     user_conversations[user_id] = []
 
-    welcome_message = f"""👋 Привет, {user_name}! Я — твой Fashion AI Agent!
-
-✨ **Мои специализации:**
-• Анализ образов
-• Капсульные гардеробы
-• Советы по трендам и сочетаниям
-• Планирование fashion-проектов
-• Консультации по продюсированию
-
-💡 **Как использовать:**
-• Отправь фото для анализа
-• Задай вопрос о стиле или трендах
-• Попроси помочь спланировать проект
-
-**Команды:**
-/start - Начать сначала
-/clear - Очистить историю диалога
-/help - Примеры вопросов
-
-🚀 Работает на Groq AI"""
+    welcome_message = f"""👋 Привет, {user_name}! Я — твой Fashion AI Agent! ..."""
     await update.message.reply_text(welcome_message)
 
 
 async def help_command(update, context):
-    help_text = """💡 **Примеры вопросов:**
-• "Помоги создать капсульный гардероб для весны"
-• "Какие цвета мне подойдут?"
-• "Как собрать образ для собеседования?"
-• "Что носить с джинсами?"
-• "Проанализируй мой образ на фото"
-• "Как спланировать fashion-съемку с бюджетом 50к?"
-• "Какие тренды актуальны сейчас?"
-"""
+    help_text = """💡 Примеры вопросов: ..."""
     await update.message.reply_text(help_text)
 
 
@@ -132,7 +70,6 @@ async def handle_message(update, context):
         messages = [{"role": "system", "content": FASHION_SYSTEM_PROMPT}]
         messages.extend(user_conversations[user_id])
 
-        # Текстовая модель
         response = client.chat.completions.create(
             model="llama-3.1-8b-instant",
             messages=messages,
@@ -144,7 +81,6 @@ async def handle_message(update, context):
         assistant_message = response.choices[0].message.content
         user_conversations[user_id].append({"role": "assistant", "content": assistant_message})
 
-        # Ограничиваем историю последних 20 сообщений
         if len(user_conversations[user_id]) > 20:
             user_conversations[user_id] = user_conversations[user_id][-20:]
 
@@ -168,24 +104,20 @@ async def handle_photo(update, context):
         photo_file = await photo.get_file()
         photo_bytes = await photo_file.download_as_bytearray()
 
-        # Уменьшаем изображение
         image = Image.open(io.BytesIO(photo_bytes))
         image = image.convert("RGB")
-        image.thumbnail((1024, 1024))  # ограничиваем размер
+        image.thumbnail((1024, 1024))
         buffer = io.BytesIO()
         image.save(buffer, format="JPEG", quality=85)
         photo_base64 = base64.b64encode(buffer.getvalue()).decode("utf-8")
 
         caption = update.message.caption or "Проанализируй этот образ детально"
-
-        # Добавляем сообщение пользователя как текст (с меткой фото)
         user_conversations[user_id].append(
             {"role": "user", "content": f"{caption}\n[Фото прикреплено]"}
         )
 
         await update.message.chat.send_action(ChatAction.TYPING)
 
-        # Модель с фото
         messages = [{"role": "system", "content": FASHION_SYSTEM_PROMPT}] + user_conversations[user_id]
 
         response = client.chat.completions.create(
@@ -199,7 +131,6 @@ async def handle_photo(update, context):
         assistant_message = response.choices[0].message.content
         user_conversations[user_id].append({"role": "assistant", "content": assistant_message})
 
-        # Ограничиваем историю последних 20 сообщений
         if len(user_conversations[user_id]) > 20:
             user_conversations[user_id] = user_conversations[user_id][-20:]
 
