@@ -17,11 +17,11 @@ from telegram.constants import ChatAction
 from PIL import Image
 
 # ----------------- .env -----------------
-env_path = Path(__file__).parent / ".env"
-load_dotenv(dotenv_path=env_path)
+#env_path = Path(__file__).parent / ".env"
+#load_dotenv(dotenv_path=env_path)
 
-print("Файл существует?", env_path.exists())
-print("Содержимое файла:", env_path.read_text())
+#print("Файл существует?", env_path.exists())
+#print("Содержимое файла:", env_path.read_text())
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
