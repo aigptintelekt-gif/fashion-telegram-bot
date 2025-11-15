@@ -2,6 +2,7 @@
 import os
 import io
 import base64
+import json
 import httpx
 from PIL import Image
 
@@ -28,6 +29,29 @@ FASHION_SYSTEM_PROMPT = """Ты — экспертный AI-агент в обл
 # ----------------- Хранилище истории -----------------
 user_conversations = {}
 
+# ----------------- Вспомогательная функция для DeepSeek -----------------
+def call_deepseek(messages):
+    headers = {
+        "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "model": "deepseek-chat",  # актуальная модель
+        "messages": messages,
+        "temperature": 0.7,
+        "max_tokens": 1024,
+        "stream": False
+    }
+
+    # Вывод payload для проверки формата
+    print("Sending payload to DeepSeek:")
+    print(json.dumps(payload, indent=2, ensure_ascii=False))
+
+    response = httpx.post(API_URL, headers=headers, json=payload, timeout=60)
+    response.raise_for_status()
+    data = response.json()
+    return data["choices"][0]["message"]["content"]
+
 # ----------------- Обработчики -----------------
 async def start(update: Update, context):
     user_id = update.effective_user.id
@@ -35,9 +59,8 @@ async def start(update: Update, context):
     user_conversations[user_id] = []
 
     welcome_message = f"""👋 Привет, {user_name}! Я — твой Fashion AI Agent! 
-Отправь мне текстовое сообщение или фото, чтобы я дал совет по стилю."""
+Отправь мне текст или фото, чтобы я дал советы по стилю."""
     await update.message.reply_text(welcome_message)
-
 
 async def help_command(update: Update, context):
     help_text = """💡 Примеры вопросов:
@@ -46,30 +69,10 @@ async def help_command(update: Update, context):
 - Дай советы по стилю для зимы."""
     await update.message.reply_text(help_text)
 
-
 async def clear_history(update: Update, context):
     user_id = update.effective_user.id
     user_conversations[user_id] = []
     await update.message.reply_text("✨ История диалога очищена!")
-
-# ----------------- Вспомогательная функция для DeepSeek -----------------
-def call_deepseek(messages):
-    headers = {
-        "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
-        "Content-Type": "application/json"
-    }
-    payload = {
-        "model": "deepseek-chat",  # актуальная модель из документации
-        "messages": messages,
-        "temperature": 0.7,
-        "max_tokens": 1024,
-        "stream": False
-    }
-
-    response = httpx.post(API_URL, headers=headers, json=payload, timeout=60)
-    response.raise_for_status()
-    data = response.json()
-    return data["choices"][0]["message"]["content"]
 
 # ----------------- Обработка текстовых сообщений -----------------
 async def handle_message(update: Update, context):
@@ -129,28 +132,4 @@ async def handle_photo(update: Update, context):
         if len(user_conversations[user_id]) > 20:
             user_conversations[user_id] = user_conversations[user_id][-20:]
 
-        await update.message.reply_text(assistant_message)
-
-    except Exception as e:
-        await update.message.reply_text(f"⚠️ Ошибка обработки фото: {e}\nПопробуйте отправить уменьшенное фото.")
-        print(f"Photo error: {e}")
-
-# ----------------- Основная функция -----------------
-def main():
-    print("=" * 50)
-    print("🚀 Запускаю Fashion AI Telegram Bot (DeepSeek)")
-    print("=" * 50)
-
-    app = Application.builder().token(TELEGRAM_TOKEN).build()
-
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("help", help_command))
-    app.add_handler(CommandHandler("clear", clear_history))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
-
-    print("✅ Бот успешно запущен и готов к работе!")
-    app.run_polling()
-
-if __name__ == "__main__":
-    main()
+        await
