@@ -2,7 +2,6 @@
 import os
 import io
 import base64
-import json
 import httpx
 from PIL import Image
 
@@ -22,8 +21,8 @@ if not TELEGRAM_TOKEN or not DEEPSEEK_API_KEY:
     raise ValueError("❌ Не найдены токены! Добавьте TELEGRAM_TOKEN и DEEPSEEK_API_KEY в Heroku Config Vars")
 
 # ----------------- Настройки DeepSeek -----------------
-API_URL = "https://api.deepseek.com/v1/chat/completions"
-FASHION_SYSTEM_PROMPT = """Ты — экспертный AI-агент в области fashion-индустрии. 
+API_URL = "https://api.deepseek.com/chat/completions"  # актуальный URL DeepSeek
+FASHION_SYSTEM_PROMPT = """Ты — экспертный AI-агент в области fashion-индустрии.
 Давай детально анализировать образы, давать советы и рекомендации."""
 
 # ----------------- Хранилище истории -----------------
@@ -60,16 +59,16 @@ def call_deepseek(messages):
         "Content-Type": "application/json"
     }
     payload = {
-        "model": "your-model-name",  # замените на актуальную модель DeepSeek
+        "model": "deepseek-chat",  # актуальная модель из документации
         "messages": messages,
         "temperature": 0.7,
-        "max_tokens": 1024
+        "max_tokens": 1024,
+        "stream": False
     }
 
     response = httpx.post(API_URL, headers=headers, json=payload, timeout=60)
     response.raise_for_status()
     data = response.json()
-    # Ответ DeepSeek находится обычно в choices[0].message.content
     return data["choices"][0]["message"]["content"]
 
 # ----------------- Обработка текстовых сообщений -----------------
