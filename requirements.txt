@@ -3,3 +3,4 @@ openai==1.14.1
 Pillow==12.0.0
 requests==2.31.0
 python-dotenv==1.2.1
+https://api-docs.deepseek.com
