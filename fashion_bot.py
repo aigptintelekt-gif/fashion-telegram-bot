@@ -32,10 +32,10 @@ print("DASHSCOPE_API_KEY:", DASHSCOPE_API_KEY)
 if not TELEGRAM_TOKEN or not DASHSCOPE_API_KEY:
     raise ValueError("❌ Не найдены токены! Проверь файл .env")
 
-# ----------------- DashScope API -----------------
-DASHSCOPE_BASE_URL = "https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation"
+# ----------------- DashScope API (совместимый режим) -----------------
+DASHSCOPE_BASE_URL = "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions"
 
-QWEN_MODEL_NAME = "qwen-vl-max"  # или qwen-vl-plus
+QWEN_MODEL_NAME = "qwen-vl-max"  # или qwen-vl-plus, если у вас есть доступ
 
 # ----------------- System Prompt -----------------
 FASHION_SYSTEM_PROMPT = """Ты — экспертный AI-агент в области fashion-индустрии, сочетающий роли профессионального стилиста и продюсера.
@@ -71,7 +71,7 @@ FASHION_SYSTEM_PROMPT = """Ты — экспертный AI-агент в обл
 # ----------------- Хранилище истории -----------------
 user_conversations = {}
 
-# ----------------- Вспомогательная функция для вызова Qwen API -----------------
+# ----------------- Вспомогательная функция для вызова Qwen API (совместимый режим) -----------------
 def call_qwen_api(messages, is_vision=False):
     headers = {
         "Authorization": f"Bearer {DASHSCOPE_API_KEY}",
@@ -80,27 +80,23 @@ def call_qwen_api(messages, is_vision=False):
 
     payload = {
         "model": QWEN_MODEL_NAME,
-        "input": {
-            "messages": messages
-        },
-        "parameters": {
-            "temperature": 0.7,
-            "max_tokens": 1024,
-            "top_p": 0.9
-        }
+        "messages": messages,
+        "temperature": 0.7,
+        "max_tokens": 1024,
+        "top_p": 0.9
     }
 
     try:
-        print("Отправляю запрос к DashScope API...")
+        print("Отправляю запрос к DashScope API (совместимый режим)...")
         response = requests.post(DASHSCOPE_BASE_URL, headers=headers, json=payload, timeout=30)
         print(f"Статус ответа: {response.status_code}")
-        print(f"Тело ответа: {response.text[:500]}...")  # первые 500 символов
+        print(f"Тело ответа: {response.text[:500]}...")
 
         response.raise_for_status()
         result = response.json()
 
-        # Извлечение текста из ответа
-        text = result.get('output', {}).get('choices', [{}])[0].get('message', {}).get('content', '')
+        # Извлечение текста из ответа (новый формат как у OpenAI)
+        text = result.get('choices', [{}])[0].get('message', {}).get('content', '')
         print("Ответ от API успешно получен.")
         return text
     except requests.exceptions.ConnectionError as e:
@@ -179,19 +175,19 @@ async def handle_message(update, context):
     if user_id not in user_conversations:
         user_conversations[user_id] = []
 
-    user_conversations[user_id].append({"role": "user", "content": user_message})
+    user_conversations[user_id].append({"role": "user", "content": {"type": "text", "text": user_message}})
     await update.message.chat.send_action(ChatAction.TYPING)
 
     try:
         # Подготовка сообщений для Qwen (только текст)
         messages = [
-            {"role": "system", "content": FASHION_SYSTEM_PROMPT},
+            {"role": "system", "content": {"type": "text", "text": FASHION_SYSTEM_PROMPT}},
         ]
         messages.extend(user_conversations[user_id])
 
         assistant_message = call_qwen_api(messages, is_vision=False)
 
-        user_conversations[user_id].append({"role": "assistant", "content": assistant_message})
+        user_conversations[user_id].append({"role": "assistant", "content": {"type": "text", "text": assistant_message}})
 
         # Ограничиваем историю последних 20 сообщений
         if len(user_conversations[user_id]) > 20:
@@ -229,7 +225,7 @@ async def handle_photo(update, context):
 
         # Подготовка сообщений для Qwen (текст + изображение)
         messages = [
-            {"role": "system", "content": FASHION_SYSTEM_PROMPT},
+            {"role": "system", "content": {"type": "text", "text": FASHION_SYSTEM_PROMPT}},
         ]
 
         # Добавляем предыдущие сообщения (если есть)
@@ -239,8 +235,8 @@ async def handle_photo(update, context):
         last_message_with_image = {
             "role": "user",
             "content": [
-                {"text": caption},
-                {"image": f"data:image/jpeg;base64,{photo_base64}"}  # ✅ Исправленный формат
+                {"type": "text", "text": caption},
+                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{photo_base64}"}}
             ]
         }
         messages.append(last_message_with_image)
@@ -250,7 +246,7 @@ async def handle_photo(update, context):
         # Вызов Qwen API с изображением
         assistant_message = call_qwen_api(messages, is_vision=True)
 
-        user_conversations[user_id].append({"role": "assistant", "content": assistant_message})
+        user_conversations[user_id].append({"role": "assistant", "content": {"type": "text", "text": assistant_message}})
 
         # Ограничиваем историю последних 20 сообщений
         if len(user_conversations[user_id]) > 20:
