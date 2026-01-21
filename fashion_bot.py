@@ -1,118 +1,153 @@
 # ----------------- imports -----------------
+from dotenv import load_dotenv
 import os
-import io
+from pathlib import Path
 import base64
-import httpx
-from PIL import Image
+import io
+import requests
 
 # Telegram
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters
 from telegram.constants import ChatAction
 
-# ----------------- Переменные окружения -----------------
-TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
-DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY")
+# Pillow для уменьшения фото
+from PIL import Image
+
+# ----------------- .env -----------------
+env_path = Path(__file__).parent / ".env"
+load_dotenv(dotenv_path=env_path)
+
+print("Файл существует?", env_path.exists())
+if env_path.exists():
+    print("Содержимое файла:", env_path.read_text())
+
+DASHSCOPE_API_KEY = os.getenv("DASHSCOPE_API_KEY")
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 
 print("TELEGRAM_TOKEN:", TELEGRAM_TOKEN)
-print("DEEPSEEK_API_KEY:", DEEPSEEK_API_KEY)
+print("DASHSCOPE_API_KEY:", DASHSCOPE_API_KEY)
 
-if not TELEGRAM_TOKEN or not DEEPSEEK_API_KEY:
-    raise ValueError(
-        "❌ Не найдены токены! Добавьте TELEGRAM_TOKEN и DEEPSEEK_API_KEY в Heroku Config Vars"
-    )
+if not TELEGRAM_TOKEN or not DASHSCOPE_API_KEY:
+    raise ValueError("❌ Не найдены токены! Проверь файл .env")
 
-# ----------------- Настройки DeepSeek -----------------
-API_URL = "https://api.deepseek.com/v1/chat/completions"  # правильный URL
+# ----------------- DashScope API -----------------
+DASHSCOPE_BASE_URL = "https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation"
+
+QWEN_MODEL_NAME = "qwen-vl-max"  # или другая модель, например qwen-vl-plus
+
+# ----------------- System Prompt -----------------
 FASHION_SYSTEM_PROMPT = """Ты — экспертный AI-агент в области fashion-индустрии, сочетающий роли профессионального стилиста и продюсера.
 
-ТВОИ РОЛИ:
-
 🎨 КАК СТИЛИСТ:
-- Анализируй образы с профессиональной точки зрения (силуэт, цвет, пропорции, текстуры)
+- Анализируй образы с профессиональной точки зрения
 - Давай конкретные, применимые советы по стилю
 - Учитывай типы фигур, цветотипы, lifestyle клиента
-- Создавай капсульные гардеробы и луки для разных случаев
+- Создавай капсульные гардеробы и луки
 - Рекомендуй сочетания вещей и аксессуаров
-- Следи за актуальными трендами, но адаптируй их под индивидуальность
+- Следи за актуальными трендами
 
 🎬 КАК ПРОДЮСЕР:
-- Помогай планировать fashion-проекты (съемки, показы, кампании)
-- Консультируй по бюджетированию и тайминг съемок
-- Давай советы по выбору команды (фотографы, визажисты, модели)
+- Помогай планировать fashion-проекты
+- Консультируй по бюджету и таймингу съемок
+- Давай советы по выбору команды
 - Помогай с концепцией и настроением проекта
 - Консультируй по локациям и реквизиту
 
 СТИЛЬ ОБЩЕНИЯ:
-- Профессиональный, но дружелюбный
-- Вдохновляющий и мотивирующий
+- Профессиональный, дружелюбный, вдохновляющий
 - Используй модную терминологию, но объясняй сложные понятия
-- Будь конкретным: вместо "носи что-то яркое" → "попробуй блейзер в оттенке electric blue"
-- Используй эмодзи умеренно для структуры (✨, 👗, 💫, 🎨)
+- Будь конкретным
+- Эмодзи умеренно (✨, 👗, 💫, 🎨)
 
 При анализе фото:
 - Детально описывай что видишь
 - Выделяй удачные элементы
 - Предлагай улучшения тактично
-- Рекомендуй конкретные альтернативы."""
+- Рекомендуй конкретные альтернативы
+"""
 
 # ----------------- Хранилище истории -----------------
 user_conversations = {}
 
-# ----------------- Вспомогательная функция для DeepSeek -----------------
-def call_deepseek(messages):
-    """
-    Отправка сообщений в DeepSeek API и получение ответа.
-    messages: список словарей {"role": "system/user", "content": "..."}
-    """
-    payload = {
-        "model": "deepseek-chat",
-        "messages": messages,
-        "temperature": 0.7,
-        "max_tokens": 1024
-    }
+# ----------------- Вспомогательная функция для вызова Qwen API -----------------
+def call_qwen_api(messages, is_vision=False):
     headers = {
-        "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
+        "Authorization": f"Bearer {DASHSCOPE_API_KEY}",
         "Content-Type": "application/json"
     }
 
-    response = httpx.post(API_URL, headers=headers, json=payload, timeout=60)
+    payload = {
+        "model": QWEN_MODEL_NAME,
+        "input": {
+            "messages": messages
+        },
+        "parameters": {
+            "temperature": 0.7,
+            "max_tokens": 1024,
+            "top_p": 0.9
+        }
+    }
 
-    # Если ошибка 400, выводим тело ответа для диагностики
-    if response.status_code == 400:
-        raise ValueError(f"❌ Ошибка 400: {response.text}")
-
+    response = requests.post(DASHSCOPE_BASE_URL, headers=headers, json=payload)
     response.raise_for_status()
-    data = response.json()
-    return data["choices"][0]["message"]["content"]
+    result = response.json()
+
+    # Извлечение текста из ответа (может отличаться, проверьте документацию)
+    text = result.get('output', {}).get('choices', [{}])[0].get('message', {}).get('content', '')
+    return text
+
 
 # ----------------- Обработчики -----------------
-async def start(update: Update, context):
+async def start(update, context):
     user_id = update.effective_user.id
     user_name = update.effective_user.first_name
     user_conversations[user_id] = []
 
-    welcome_message = f"""👋 Привет, {user_name}! Я — твой Fashion AI Agent! 
-Отправь текст или фото, чтобы получить советы по стилю."""
+    welcome_message = f"""👋 Привет, {user_name}! Я — твой Fashion AI Agent!
+
+✨ **Мои специализации:**
+• Анализ образов
+• Капсульные гардеробы
+• Советы по трендам и сочетаниям
+• Планирование fashion-проектов
+• Консультирую по продюсированию
+
+💡 **Как использовать:**
+• Отправь фото для анализа
+• Задай вопрос о стиле или трендах
+• Попроси помочь спланировать проект
+
+**Команды:**
+/start - Начать сначала
+/clear - Очистить историю диалога
+/help - Примеры вопросов
+
+🚀 Работает на Qwen AI (Alibaba Cloud)"""
     await update.message.reply_text(welcome_message)
 
 
-async def help_command(update: Update, context):
-    help_text = """💡 Примеры вопросов:
-- Как подобрать одежду на вечер?
-- Оцени мой образ на фото.
-- Дай советы по стилю для зимы."""
+async def help_command(update, context):
+    help_text = """💡 **Примеры вопросов:**
+• "Помоги создать капсульный гардероб для весны"
+• "Какие цвета мне подойдут?"
+• "Как собрать образ для собеседования?"
+• "Что носить с джинсами?"
+• "Проанализируй мой образ на фото"
+• "Как спланировать fashion-съемку с бюджетом 50к?"
+• "Какие тренды актуальны сейчас?"
+"""
     await update.message.reply_text(help_text)
 
 
-async def clear_history(update: Update, context):
+async def clear_history(update, context):
     user_id = update.effective_user.id
     user_conversations[user_id] = []
     await update.message.reply_text("✨ История диалога очищена!")
 
 
 # ----------------- Текстовые сообщения -----------------
-async def handle_message(update: Update, context):
+async def handle_message(update, context):
     user_id = update.effective_user.id
     user_message = update.message.text
 
@@ -123,22 +158,29 @@ async def handle_message(update: Update, context):
     await update.message.chat.send_action(ChatAction.TYPING)
 
     try:
-        messages = [{"role": "system", "content": FASHION_SYSTEM_PROMPT}] + user_conversations[user_id]
-        assistant_message = call_deepseek(messages)
+        # Подготовка сообщений для Qwen (только текст)
+        messages = [
+            {"role": "system", "content": FASHION_SYSTEM_PROMPT},
+        ]
+        messages.extend(user_conversations[user_id])
+
+        assistant_message = call_qwen_api(messages, is_vision=False)
 
         user_conversations[user_id].append({"role": "assistant", "content": assistant_message})
+
+        # Ограничиваем историю последних 20 сообщений
         if len(user_conversations[user_id]) > 20:
             user_conversations[user_id] = user_conversations[user_id][-20:]
 
         await update.message.reply_text(assistant_message)
 
     except Exception as e:
-        await update.message.reply_text(f"😔 Произошла ошибка: {e}\nПопробуйте /clear")
-        print(f"Error: {e}")
+        await update.message.reply_text(f"😔 Произошла ошибка: {e}\nПопробуйте /clear.")
+        print(f"Text error: {e}")
 
 
 # ----------------- Фото сообщения -----------------
-async def handle_photo(update: Update, context):
+async def handle_photo(update, context):
     user_id = update.effective_user.id
     if user_id not in user_conversations:
         user_conversations[user_id] = []
@@ -150,23 +192,42 @@ async def handle_photo(update: Update, context):
         photo_file = await photo.get_file()
         photo_bytes = await photo_file.download_as_bytearray()
 
-        # Уменьшаем и конвертируем фото
-        image = Image.open(io.BytesIO(photo_bytes)).convert("RGB")
-        image.thumbnail((1024, 1024))
+        # Уменьшаем изображение
+        image = Image.open(io.BytesIO(photo_bytes))
+        image = image.convert("RGB")  # Убедимся, что это RGB
+        image.thumbnail((1024, 1024))  # ограничиваем размер
         buffer = io.BytesIO()
         image.save(buffer, format="JPEG", quality=85)
         photo_base64 = base64.b64encode(buffer.getvalue()).decode("utf-8")
 
-        caption = update.message.caption or "Проанализируй этот образ детально"
-        user_conversations[user_id].append(
-            {"role": "user", "content": f"{caption}\n[Фото прикреплено]"}
-        )
+        caption = update.message.caption or "Проанализируй этот образ детально."
+
+        # Подготовка сообщений для Qwen (текст + изображение)
+        messages = [
+            {"role": "system", "content": FASHION_SYSTEM_PROMPT},
+        ]
+
+        # Добавляем предыдущие сообщения (если есть)
+        messages.extend(user_conversations[user_id][:-1])  # все кроме последнего
+
+        # Последнее сообщение пользователя: текст + изображение
+        last_message_with_image = {
+            "role": "user",
+            "content": [
+                {"text": caption},
+                {"image": f"data:image/jpeg;base64,{photo_base64}"}
+            ]
+        }
+        messages.append(last_message_with_image)
 
         await update.message.chat.send_action(ChatAction.TYPING)
-        messages = [{"role": "system", "content": FASHION_SYSTEM_PROMPT}] + user_conversations[user_id]
-        assistant_message = call_deepseek(messages)
+
+        # Вызов Qwen API с изображением
+        assistant_message = call_qwen_api(messages, is_vision=True)
 
         user_conversations[user_id].append({"role": "assistant", "content": assistant_message})
+
+        # Ограничиваем историю последних 20 сообщений
         if len(user_conversations[user_id]) > 20:
             user_conversations[user_id] = user_conversations[user_id][-20:]
 
@@ -180,7 +241,7 @@ async def handle_photo(update: Update, context):
 # ----------------- Основная функция -----------------
 def main():
     print("=" * 50)
-    print("🚀 Запускаю Fashion AI Telegram Bot (DeepSeek)")
+    print("🚀 Запускаю Fashion AI Telegram Bot (Qwen)")
     print("=" * 50)
 
     app = Application.builder().token(TELEGRAM_TOKEN).build()
