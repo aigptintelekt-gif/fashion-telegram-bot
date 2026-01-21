@@ -5,6 +5,7 @@ from pathlib import Path
 import base64
 import io
 import requests
+import traceback
 
 # Telegram
 from telegram import Update
@@ -34,7 +35,7 @@ if not TELEGRAM_TOKEN or not DASHSCOPE_API_KEY:
 # ----------------- DashScope API -----------------
 DASHSCOPE_BASE_URL = "https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation"
 
-QWEN_MODEL_NAME = "qwen-vl-max"  # или другая модель, например qwen-vl-plus
+QWEN_MODEL_NAME = "qwen-vl-max"  # или qwen-vl-plus
 
 # ----------------- System Prompt -----------------
 FASHION_SYSTEM_PROMPT = """Ты — экспертный AI-агент в области fashion-индустрии, сочетающий роли профессионального стилиста и продюсера.
@@ -89,13 +90,31 @@ def call_qwen_api(messages, is_vision=False):
         }
     }
 
-    response = requests.post(DASHSCOPE_BASE_URL, headers=headers, json=payload)
-    response.raise_for_status()
-    result = response.json()
+    try:
+        response = requests.post(DASHSCOPE_BASE_URL, headers=headers, json=payload, timeout=30)
+        response.raise_for_status()
+        result = response.json()
 
-    # Извлечение текста из ответа (может отличаться, проверьте документацию)
-    text = result.get('output', {}).get('choices', [{}])[0].get('message', {}).get('content', '')
-    return text
+        # Извлечение текста из ответа
+        text = result.get('output', {}).get('choices', [{}])[0].get('message', {}).get('content', '')
+        return text
+    except requests.exceptions.ConnectionError:
+        print("Ошибка подключения к API (ConnectionError)")
+        return "Ошибка подключения к API. Проверьте доступность."
+    except requests.exceptions.Timeout:
+        print("Таймаут при обращении к API")
+        return "Таймаут при обращении к API."
+    except requests.exceptions.HTTPError as e:
+        print(f"HTTP ошибка: {e}")
+        return f"HTTP ошибка: {e}"
+    except requests.exceptions.RequestException as e:
+        print(f"Ошибка запроса: {e}")
+        print(traceback.format_exc())
+        return "Ошибка при обращении к API."
+    except Exception as e:
+        print(f"Неизвестная ошибка: {e}")
+        print(traceback.format_exc())
+        return "Неизвестная ошибка."
 
 
 # ----------------- Обработчики -----------------
