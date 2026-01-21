@@ -91,21 +91,27 @@ def call_qwen_api(messages, is_vision=False):
     }
 
     try:
+        print("Отправляю запрос к DashScope API...")
         response = requests.post(DASHSCOPE_BASE_URL, headers=headers, json=payload, timeout=30)
+        print(f"Статус ответа: {response.status_code}")
+        print(f"Тело ответа: {response.text[:500]}...")  # первые 500 символов
+
         response.raise_for_status()
         result = response.json()
 
         # Извлечение текста из ответа
         text = result.get('output', {}).get('choices', [{}])[0].get('message', {}).get('content', '')
+        print("Ответ от API успешно получен.")
         return text
-    except requests.exceptions.ConnectionError:
-        print("Ошибка подключения к API (ConnectionError)")
+    except requests.exceptions.ConnectionError as e:
+        print(f"Ошибка подключения к API: {e}")
         return "Ошибка подключения к API. Проверьте доступность."
-    except requests.exceptions.Timeout:
-        print("Таймаут при обращении к API")
+    except requests.exceptions.Timeout as e:
+        print(f"Таймаут при обращении к API: {e}")
         return "Таймаут при обращении к API."
     except requests.exceptions.HTTPError as e:
         print(f"HTTP ошибка: {e}")
+        print(f"Тело ошибки: {response.text}")
         return f"HTTP ошибка: {e}"
     except requests.exceptions.RequestException as e:
         print(f"Ошибка запроса: {e}")
@@ -234,7 +240,7 @@ async def handle_photo(update, context):
             "role": "user",
             "content": [
                 {"text": caption},
-                {"image": f"data:image/jpeg;base64,{photo_base64}"}
+                {"image": f"data:image/jpeg;base64,{photo_base64}"}  # ✅ Исправленный формат
             ]
         }
         messages.append(last_message_with_image)
