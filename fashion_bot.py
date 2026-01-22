@@ -68,41 +68,33 @@ def _generate_text_sync(messages):
         return "Прости, произошла ошибка при генерации ответа."
 
 
+import dashscope
+from dashscope import ImageSynthesis
+
 def _generate_image_sync(prompt):
-
-    global DASHSCOPE_API_KEY
-
+    # Берем ключ напрямую из переменной окружения
+    api_key = os.getenv("DASHSCOPE_API_KEY")
+    dashscope.api_key = api_key
+    
     try:
-        url = "https://dashscope-intl.aliyuncs.com/api/v1"
+        # Используем официальный метод SDK вместо ручных запросов requests
+        rsp = ImageSynthesis.call(
+            model="qwen-image-max",
+            prompt=prompt,
+            n=1,
+            size='1024*1024'
+        )
         
-        headers = {
-            "Authorization": f"Bearer {DASHSCOPE_API_KEY}",
-            "Content-Type": "application/json",
-            "X-DashScope-Async": "enable" ,# Включаем асинхронный режим
-            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
-            }
-        
-        payload = {
-            "model": "qwen-image-max",
-            "input": {
-                "prompt": prompt
-            },
-            "parameters": {
-                "n": 1,
-                "size": "1024*1024"
-            }
-        }
-
-        # 1. Создаем задачу на генерацию
-        response = requests.post(url, headers=headers, json=payload)
-        res_data = response.json()
-        
-        if response.status_code != 200:
-            logger.error(f"Ошибка создания задачи: {res_data}")
+        if rsp.status_code == 200:
+            # SDK возвращает результат сразу или ссылку на задачу
+            # В зависимости от настроек аккаунта
+            return rsp.output.results[0].url
+        else:
+            logger.error(f"DashScope Error: {rsp.code} - {rsp.message}")
             return None
-
-        task_id = res_data['output']['task_id']
-        task_url = f"https://dashscope-intl.aliyuncs.com/api/v1/tasks/{task_id}"
+    except Exception as e:
+        logger.error(f"Критическая ошибка SDK: {e}")
+        return None
 
         # 2. Ждем готовности (проверка каждые 2 секунды)
         for _ in range(30): # Ждем максимум 60 секунд
