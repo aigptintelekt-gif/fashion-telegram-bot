@@ -101,30 +101,16 @@ def _generate_image_sync(prompt):
             logger.error(f"Ошибка API: {response.status_code} - {response.text}")
             return None
             
-        task_data = response.json()
-        task_id = task_data.get("output", {}).get("task_id")
+        result = response.json()
+        # В синхронном ответе ссылка лежит здесь:
+        image_url = result.get("output", {}).get("results", [{}])[0].get("url")
         
-        if not task_id:
-            logger.error(f"Не удалось получить task_id: {task_data}")
-            return None
-
-        # Проверяем статус задачи (ждем до 60 секунд)
-        status_url = f"https://dashscope-intl.aliyuncs.com/api/v1/tasks/{task_id}"
-        for _ in range(12):  # 12 попыток по 5 секунд
-            time.sleep(5)
-            check = requests.get(status_url, headers={"Authorization": f"Bearer {api_key}"})
-            res = check.json()
-            status = res.get("output", {}).get("task_status")
-            
-            logger.info(f"Статус задачи {task_id}: {status}")
-            
-            if status == "SUCCEEDED":
-                return res.get("output", {}).get("results", [{}])[0].get("url")
-            elif status == "FAILED":
-                logger.error(f"Задача провалена: {res}")
-                break
+        if image_url:
+            logger.info(f"Изображение готово: {image_url}")
+            return image_url
+        
+        logger.error(f"Не удалось найти URL в ответе: {result}")
         return None
-        
     except Exception as e:
         logger.error(f"Ошибка в генерации: {e}")
         return None
