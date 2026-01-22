@@ -41,7 +41,20 @@ def get_main_menu():
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
 # --- ТЕХНИЧЕСКИЕ ФУНКЦИИ (СИНХРОННЫЕ) ---
-
+def _generate_image_sync(prompt):
+    """Простая генерация по тексту (для новостей)"""
+    try:
+        rsp = ImageSynthesis.call(
+            model="wanx-v1",
+            prompt=f"{prompt}, professional fashion shot, high detail, 8k, realistic style",
+            n=1,
+            size='1024*1024'
+        )
+        if rsp.status_code == HTTPStatus.OK:
+            return rsp.output.results[0].url
+        return None
+    except:
+        return None
 def _analyze_photo_with_vision(photo_url, user_caption):
     """Qwen-VL анализирует фото и создает промпт для переодевания"""
     try:
@@ -130,7 +143,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("👗 **Примеряю новый образ... Сохраняю твои черты лица.**")
     await update.message.reply_chat_action(constants.ChatAction.UPLOAD_PHOTO)
     
-    final_image = await loop.run_in_executor(executor, _generate_face_ref_image, styled_prompt, photo_url)
+    final_image = await loop.run_in_executor(executor, _generate_image_sync, styled_prompt, photo_url)
     
     if final_image:
         await update.message.reply_photo(final_image, caption="🌟 Твой новый образ готов! \nЯ сохранил твоё лицо и адаптировал стиль под 2026 год. 😍")
