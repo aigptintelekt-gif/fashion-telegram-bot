@@ -88,7 +88,7 @@ def _generate_image_sync(prompt):
     }
     
     payload = {
-        "model": "qwen-image-max",
+        "model": "wanx-v1",
         "input": {"prompt": prompt},
         "parameters": {"n": 1, "size": "1024*1024"}
     }
