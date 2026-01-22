@@ -139,52 +139,60 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 from datetime import datetime
 
-from datetime import datetime
-
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
     loop = asyncio.get_running_loop()
     now = datetime.now()
     current_date_str = now.strftime("%d января %Y года")
 
-    # ИНСТРУКЦИЯ: Просим ИИ выдавать новости со структурой под ссылки
-    STYLE_INSTRUCTION = (
-        f"Сегодня {current_date_str}. Ты — фэшн-аналитик. "
-        "Напиши 3 новости моды. Каждую новость начни с заголовка, затем текст. "
-        "В конце каждой новости добавь ссылку на авторитетный ресурс (vogue.com, hypebeast.com или bof.com). "
-        "НЕ используй символы '***'. Пиши чисто и красиво."
-    )
-
     if text == '🗞 Новости моды':
+        # 1. Мгновенный ответ, чтобы пользователь не ждал
+        await update.message.reply_text(
+            f"👠 **Связываюсь с редакцией в Париже и Милане...**\n"
+            f"Подбираю самые свежие материалы на {current_date_str}.\n"
+            f"Как только подготовлю статью и ссылки — я сразу тебя оповещу! Подожди пару секунд... ⚡️"
+        )
+        
         await update.message.reply_chat_action(constants.ChatAction.TYPING)
-        
-        # 1. Генерируем текст новостей
-        prompt = [
-            {"role": "system", "content": STYLE_INSTRUCTION},
-            {"role": "user", "content": "Дай сводку 3 главных событий моды на сегодня."}
+
+        # Инструкция для ИИ
+        news_prompt = [
+            {"role": "system", "content": f"Ты фэшн-журналист. Напиши 3 новости моды на {current_date_str}. "
+                                          "Каждая новость: Заголовок, краткий текст и ссылка на источник (Vogue, Hypebeast или BoF). "
+                                          "НЕ используй символы '***'. Текст должен быть чистым и профессиональным."},
+            {"role": "user", "content": "Дай сводку главных событий."}
         ]
-        news_text = await loop.run_in_executor(executor, _simple_text_gen, prompt)
+
+        # 2. Генерируем текст всех новостей
+        news_text = await loop.run_in_executor(executor, _simple_text_gen, news_prompt)
         
-        # Разбиваем новости, чтобы к каждой прикрепить фото (упрощенно по блокам)
-        news_blocks = news_text.split('\n\n')[:3] # Берем первые 3 новости
-        
-        for block in news_blocks:
-            if len(block.strip()) < 10: continue
-            
-            # 2. Генерируем уникальное ИИ-фото для этой новости
-            # Берем первую строку новости как тему для картинки
-            image_topic = block.split('\n')[0]
+        # Разбиваем на блоки по новостям
+        news_blocks = [block.strip() for block in news_text.split('\n\n') if len(block.strip()) > 20][:3]
+
+        # 3. Цикл отправки: картинка + текст для каждой новости
+        for i, block in enumerate(news_blocks, 1):
             await update.message.reply_chat_action(constants.ChatAction.UPLOAD_PHOTO)
             
-            img_url = await loop.run_in_executor(executor, _generate_image_sync, f"Fashion news illustration 2026: {image_topic}")
-            
+            # Берем первую строку блока как тему для генерации фото
+            topic = block.split('\n')[0]
+            img_url = await loop.run_in_executor(executor, _generate_image_sync, f"Professional fashion photography, 2026 trend: {topic}")
+
             if img_url:
-                await update.message.reply_photo(img_url, caption=block, parse_mode="Markdown")
+                await update.message.reply_photo(
+                    img_url, 
+                    caption=f"📰 **Новость №{i}**\n\n{block}", 
+                    parse_mode="Markdown"
+                )
             else:
-                await update.message.reply_text(block, parse_mode="Markdown")
-        
+                await update.message.reply_text(f"📰 **Новость №{i}**\n\n{block}", parse_mode="Markdown")
+            
+            # Небольшая пауза, чтобы Telegram не заблокировал за спам
+            await asyncio.sleep(1)
+
+        await update.message.reply_text("✅ **Дайджест на сегодня готов!** Приятного чтения. ☕️👠")
         return
 
+    # Остальная логика (Тренды, Фото и прочее)...
     # Остальная логика (Тренды, Фото и т.д.) без изменений...
 
 # --- ЗАПУСК ---
