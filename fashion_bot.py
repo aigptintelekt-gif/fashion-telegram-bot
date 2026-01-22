@@ -17,7 +17,17 @@ from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, fil
 from openai import OpenAI
 import dashscope
 from dashscope import ImageSynthesis
-
+STYLIST_PERSONALITY = (
+    "Ты — ведущий мировой эксперт в области спортивной моды и функционального стиля (Sport-Tech & Active Luxury). "
+    "Твоя специализация: слияние высоких достижений, умных тканей и высокой моды. "
+    "Твой стиль общения: профессиональный, лаконичный, экспертный. "
+    "Тон: уверенный, без лишнего восторга и обилия смайликов. "
+    "Ты веришь, что одежда 2026 года должна быть не только красивой, но и технологичной. "
+    "ПРАВИЛО ОФОРМЛЕНИЯ: "
+    "- Никаких символов '***' или '###'. "
+    "- Только 1 эмодзи на смысловой блок. "
+    "- Обязательно упоминай материалы (мембраны, био-нейлон, графеновое напыление) и функционал."
+)
 # --- ИНИЦИАЛИЗАЦИЯ ---
 load_dotenv()
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
@@ -47,7 +57,7 @@ def _generate_image_sync(prompt):
     """Простая генерация по тексту для новостей и трендов"""
     try:
         rsp = ImageSynthesis.call(
-            model="wanx-v1",
+            model="wan2.6-image",
             prompt=f"{prompt}, professional fashion shot, high detail, 8k, realistic style",
             n=1,
             size='1024*1024'
@@ -89,7 +99,7 @@ def _generate_face_ref_image(prompt, ref_image_url):
     """Генерация Wanx с использованием ссылки на лицо для 'Одень меня'"""
     try:
         rsp = ImageSynthesis.call(
-            model="wanx-v1",
+            model="wan2.6-image",
             prompt=f"{prompt}, realistic skin, masterwork, 8k",
             extra_input={"ref_image": ref_image_url},
             parameters={
@@ -100,7 +110,7 @@ def _generate_face_ref_image(prompt, ref_image_url):
         )
         if rsp.status_code == HTTPStatus.OK:
             return rsp.output.results[0].url
-        logger.error(f"Wanx face-ref error: {rsp.message}")
+        logger.error(f"wan2.6 face-ref error: {rsp.message}")
         return None
     except Exception as e:
         logger.error(f"Face-ref generation error: {e}")
@@ -189,10 +199,29 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         await update.message.reply_text("✅ **Дайджест на сегодня готов!** Приятного чтения. ☕️👠")
 
-    elif text == '🚀 Тренды 2026':
+   elif text == '🚀 Тренды 2026':
         await update.message.reply_chat_action(constants.ChatAction.TYPING)
-        res = await loop.run_in_executor(executor, _simple_text_gen, [{"role": "user", "content": "Напиши 3 главных мировых тренда моды на 2026 год со смайликами."}])
-        await update.message.reply_text(res)
+        
+        # Улучшенный промпт для профессионального стиля
+        trends_prompt = [
+            {"role": "system", "content": STYLIST_PERSONALITY}
+            {"role": "system", "content": (
+                f"Сегодня {current_date_str}. Ты ведущий аналитик агентства WGSN. "
+                "Опиши 3 главных тренда моды на 2026 год. "
+                "ПРАВИЛА ОФОРМЛЕНИЯ: "
+                "1. НЕ используй символы разметки вроде '***' или '---'. "
+                "2. Используй только 1 эмодзи в начале каждого заголовка. "
+                "3. В конце каждого тренда добавь ссылку на отчет (например, voguebusiness.com или wgsn.com). "
+                "4. Текст должен быть профессиональным, без лишнего восторга."
+            )},
+            {"role": "user", "content": "Подготовь аналитическую справку по трендам 2026 года."}
+        ]
+        
+        res = await loop.run_in_executor(executor, _simple_text_gen, trends_prompt)
+        
+        # Добавляем красивый заголовок перед ответом
+        header = f"📈 АНАЛИТИКА ТРЕНДОВ | {current_date_str}\n\n"
+        await update.message.reply_text(header + res, parse_mode="Markdown")
 
     elif text == '🧠 Сброс':
         await update.message.reply_text("🧠 Состояние сброшено. Я готов к новым задачам!", reply_markup=get_main_menu())
