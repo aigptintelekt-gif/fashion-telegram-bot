@@ -113,62 +113,67 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
     loop = asyncio.get_running_loop()
 
-    # 1. Сброс состояния
-    if text == '🧠 Сброс':
-        user_faces[user_id] = None
+    # 1. Выход из режима (всегда доступен)
+    if text in ['🧠 Сброс', '🏠 Главное меню', '❌ Отмена']:
         user_pending_prompts[user_id] = None
-        await update.message.reply_text("🧼 Память бота очищена.", reply_markup=get_main_menu())
+        await update.message.reply_text(
+            "🏠 Вы вернулись в главное меню. О чем хотите узнать?", 
+            reply_markup=get_main_menu()
+        )
         return
 
-    # 2. Обработка кнопок основного меню (Тренды, Новости и т.д.)
-    if text in ['🚀 Тренды 2026', '🏃 Спорт-Эксперт', '🗞 Новости моды', '👔 Одень меня']:
-        user_pending_prompts[user_id] = None # Сбрасываем ожидание промпта, если нажата кнопка меню
+    # 2. ПРОВЕРКА: Находится ли пользователь в режиме генерации?
+    # Мы проверяем, если статус "WAITING" или если в памяти уже есть готовый промпт (значит он в процессе)
+    is_generating = user_pending_prompts.get(user_id) is not None
+
+    if is_generating:
+        # Если пользователь ввел новый текст, значит он хочет новую картинку
         await update.message.reply_chat_action(constants.ChatAction.TYPING)
         
-        current_date = "22 января 2026 года"
-        prompt_map = {
-            '🚀 Тренды 2026': f"Напиши тренды моды на {current_date}.",
-            '🏃 Спорт-Эксперт': f"Совет по экипировке на {current_date}.",
-            '🗞 Новости моды': f"Свежие новости моды на {current_date}.",
-            '👔 Одень меня': f"Стильный образ на {current_date}."
-        }
+        # Специальное меню для режима генерации
+        gen_kb = ReplyKeyboardMarkup([['🏠 Главное меню']], resize_keyboard=True)
         
+        await update.message.reply_text("🧠 *Стилизую ваш новый запрос...*", parse_mode="Markdown", reply_markup=gen_kb)
+        
+        magic_msg = [
+            {"role": "system", "content": "You are a Fashion Prompt Generator. Translate and enhance the user's idea into a detailed English prompt. Output ONLY the prompt."},
+            {"role": "user", "content": text}
+        ]
+        
+        refined = await loop.run_in_executor(executor, _simple_text_gen, magic_msg)
+        user_pending_prompts[user_id] = refined # Обновляем текущий промпт
+        
+        await update.message.reply_text(
+            f"✨ **Новый образ готов к рендеру:**\n\n`{refined}`",
+            parse_mode="Markdown",
+            reply_markup=get_size_keyboard()
+        )
+        return
+
+    # 3. Обработка кнопок меню (Тренды, Новости и т.д.)
+    if text in ['🚀 Тренды 2026', '🏃 Спорт-Эксперт', '🗞 Новости моды', '👔 Одень меня']:
+        await update.message.reply_chat_action(constants.ChatAction.TYPING)
+        # ... (здесь ваш существующий код обработки новостей) ...
         messages = [
-            {"role": "system", "content": "Ты эксперт моды. Пиши кратко, без спецсимволов разметки."},
-            {"role": "user", "content": prompt_map[text]}
+            {"role": "system", "content": "Ты эксперт моды 2026. Пиши простым текстом без разметки."},
+            {"role": "user", "content": text}
         ]
         raw_res = await loop.run_in_executor(executor, _simple_text_gen, messages)
         await update.message.reply_text(_clean_text(raw_res))
         return
 
-    # 3. ЛОГИКА ГЕНЕРАЦИИ ФОТО (Исправлено: теперь это приоритет)
-    if text == '🎨 Создать промпт + Фото' or user_pending_prompts.get(user_id) == "WAITING":
-        if text == '🎨 Создать промпт + Фото':
-            user_pending_prompts[user_id] = "WAITING"
-            await update.message.reply_text("📽 **Режим фото-генерации активен.**\nВведите описание образа (например: 'девушка в неоновом платье'):")
-            return
-
-        # Если мы здесь, значит user_pending_prompts[user_id] == "WAITING"
-        # Обрабатываем введенный текст как описание для нейросети
-        await update.message.reply_chat_action(constants.ChatAction.TYPING)
-        await update.message.reply_text("🧠 *Превращаю вашу идею в профессиональный промпт...*", parse_mode="Markdown")
-        
-        magic_msg = [
-            {"role": "system", "content": "You are a Creative Director. Strictly convert user idea to a detailed English fashion prompt for image generation. Do not say you are a text model."},
-            {"role": "user", "content": text}
-        ]
-        refined = await loop.run_in_executor(executor, _simple_text_gen, magic_msg)
-        
-        # Сохраняем готовый английский промпт и предлагаем размеры
-        user_pending_prompts[user_id] = refined 
+    # 4. Вход в режим генерации
+    if text == '🎨 Создать промпт + Фото':
+        user_pending_prompts[user_id] = "WAITING"
+        gen_kb = ReplyKeyboardMarkup([['🏠 Главное меню']], resize_keyboard=True)
         await update.message.reply_text(
-            f"✨ **Промпт для нейросети готов:**\n\n`{refined}`", 
-            parse_mode="Markdown", 
-            reply_markup=get_size_keyboard()
+            "📽 **Вы вошли в режим генерации.**\n\nТеперь любой ваш текст будет превращаться в фото. Чтобы выйти, нажмите кнопку ниже.",
+            reply_markup=gen_kb
         )
+        await update.message.reply_text("Введите описание вашего первого образа:")
         return
 
-    # 4. Обычный чат (только если не ждем промпт для фото)
+    # 5. Обычный чат
     await update.message.reply_chat_action(constants.ChatAction.TYPING)
     res = await loop.run_in_executor(executor, _simple_text_gen, [{"role": "user", "content": text}])
     await update.message.reply_text(_clean_text(res))
