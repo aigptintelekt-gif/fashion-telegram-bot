@@ -2,6 +2,8 @@ import os
 import logging
 import asyncio
 import requests # Не забудьте добавить в импорты в начало файла
+import json
+import time
 from concurrent.futures import ThreadPoolExecutor
 from dotenv import load_dotenv
 
@@ -71,48 +73,61 @@ def _generate_text_sync(messages):
 import dashscope
 from dashscope import ImageSynthesis
 
-def _generate_image_sync(prompt):
-    # Берем ключ напрямую из переменной окружения
-    api_key = os.getenv("DASHSCOPE_API_KEY")
-    dashscope.api_key = api_key
-    dashscope.base_http_api_url = 'https://dashscope-intl.aliyuncs.com/api/v1'
-    try:
-        # Используем официальный метод SDK вместо ручных запросов requests
-        logger.info(f"Запуск генерации через SDK (Intl): {prompt}")
-        rsp = ImageSynthesis.call(
-            model="qwen-image-max",
-            prompt=prompt,
-            n=1,
-            size='1024*1024'
-        )
-        
-        if rsp.status_code == 200:
-            # SDK возвращает результат сразу или ссылку на задачу
-            # В зависимости от настроек аккаунта
-            return rsp.output.results[0].url
-        else:
-            logger.error(f"DashScope Error: {rsp.code} - {rsp.message}")
-            return None
-    except Exception as e:
-        logger.error(f"Критическая ошибка SDK: {e}")
-        return None
+import requests
+import json
+import time
 
-        # 2. Ждем готовности (проверка каждые 2 секунды)
-        for _ in range(30): # Ждем максимум 60 секунд
-            await_res = requests.get(task_url, headers=headers).json()
-            status = await_res['output']['task_status']
+def _generate_image_sync(prompt):
+    api_key = os.getenv("DASHSCOPE_API_KEY")
+    # Правильный международный URL для создания задачи
+    url = "https://dashscope-intl.aliyuncs.com/api/v1/services/aigc/text2image/image-synthesis"
+    
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+        "X-DashScope-Async": "enable"  # Включаем асинхронный режим
+    }
+    
+    payload = {
+        "model": "qwen-image-max",
+        "input": {"prompt": prompt},
+        "parameters": {"n": 1, "size": "1024*1024"}
+    }
+
+    try:
+        logger.info(f"Отправка прямого запроса к API Intl... Prompt: {prompt[:30]}...")
+        response = requests.post(url, headers=headers, data=json.dumps(payload))
+        
+        if response.status_code != 200:
+            logger.error(f"Ошибка API: {response.status_code} - {response.text}")
+            return None
             
-            if status == 'SUCCEEDED':
-                return await_res['output']['results'][0]['url']
-            elif status == 'FAILED':
-                logger.error(f"Задача провалена: {await_res}")
-                return None
+        task_data = response.json()
+        task_id = task_data.get("output", {}).get("task_id")
+        
+        if not task_id:
+            logger.error(f"Не удалось получить task_id: {task_data}")
+            return None
+
+        # Проверяем статус задачи (ждем до 60 секунд)
+        status_url = f"https://dashscope-intl.aliyuncs.com/api/v1/tasks/{task_id}"
+        for _ in range(12):  # 12 попыток по 5 секунд
+            time.sleep(5)
+            check = requests.get(status_url, headers={"Authorization": f"Bearer {api_key}"})
+            res = check.json()
+            status = res.get("output", {}).get("task_status")
             
-            asyncio.run(asyncio.sleep(2)) # Пауза между проверками
+            logger.info(f"Статус задачи {task_id}: {status}")
             
+            if status == "SUCCEEDED":
+                return res.get("output", {}).get("results", [{}])[0].get("url")
+            elif status == "FAILED":
+                logger.error(f"Задача провалена: {res}")
+                break
         return None
+        
     except Exception as e:
-        logger.error(f"Ошибка в _generate_image_sync: {e}")
+        logger.error(f"Ошибка в генерации: {e}")
         return None
 # --- ОБРАБОТЧИКИ TELEGRAM ---
 
