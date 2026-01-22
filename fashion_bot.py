@@ -175,7 +175,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
             # Берем первую строку блока как тему для генерации фото
             topic = block.split('\n')[0]
-            img_url = await loop.run_in_executor(executor, _generate_image_sync, f"Professional fashion photography, 2026 trend: {topic}")
+            img_url = await loop.run_in_executor(executor, _generate_face_ref_image, f"Professional fashion photography, 2026 trend: {topic}")
 
             if img_url:
                 await update.message.reply_photo(
