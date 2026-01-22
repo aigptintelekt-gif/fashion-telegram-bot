@@ -137,21 +137,59 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text("❌ Ошибка при примерке. Попробуй другое фото!")
 
+from datetime import datetime
+
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
     loop = asyncio.get_running_loop()
+    
+    # Автоматическое получение текущей даты
+    now = datetime.now()
+    current_date_str = now.strftime("%d января %Y года")
+
+    # Инструкция для чистого и красивого стиля
+    STYLE_INSTRUCTION = (
+        "Ты — главный редактор элитного модного журнала. Твоя речь изысканна и лаконична. "
+        "НЕ используй символы разметки типа '***' или '---'. "
+        "Для выделения заголовков используй только жирный шрифт (одиночные звездочки в Markdown или <b> в HTML). "
+        "Разделяй абзацы пустыми строками. Добавляй тематические эмодзи."
+    )
 
     if text == '🚀 Тренды 2026':
-        res = await loop.run_in_executor(executor, _simple_text_gen, [{"role": "user", "content": "Главные тренды моды 2026 со смайликами"}])
-        await update.message.reply_text(res)
+        await update.message.reply_chat_action(constants.ChatAction.TYPING)
+        prompt = [
+            {"role": "system", "content": STYLE_INSTRUCTION},
+            {"role": "user", "content": f"Напиши 3 главных мировых тренда моды на {current_date_str}. Пиши профессионально и чисто."}
+        ]
+        res = await loop.run_in_executor(executor, _simple_text_gen, prompt)
+        await update.message.reply_text(res, parse_mode="Markdown")
+
+    elif text == '🗞 Новости моды':
+        await update.message.reply_chat_action(constants.ChatAction.TYPING)
+        prompt = [
+            {"role": "system", "content": STYLE_INSTRUCTION + f" Сегодня {current_date_str}. Напиши актуальную сводку новостей (показы, технологии, бренды)."},
+            {"role": "user", "content": "Дай сводку модных событий на текущий момент."}
+        ]
+        res = await loop.run_in_executor(executor, _simple_text_gen, prompt)
+        header = f"✨ **ФЭШН-ДАЙДЖЕСТ | {current_date_str}**\n\n"
+        await update.message.reply_text(header + res, parse_mode="Markdown")
+
     elif text == '👔 Одень меня':
-        await update.message.reply_text("Просто пришли мне своё фото (портрет или в полный рост)!")
+        await update.message.reply_text("✨ Просто пришли мне своё фото (портрет или в полный рост), и я подберу для тебя идеальный лук 2026 года!")
+
     elif "http" in text:
-        await update.message.reply_text("🔎 Сканирую тренды по ссылке...")
-        res = await loop.run_in_executor(executor, _simple_text_gen, [{"role": "user", "content": f"Выдели тренды с сайта: {text}"}])
-        await update.message.reply_text(res)
+        await update.message.reply_text("🔎 **Сканирую ресурс на предмет актуальных коллекций...**")
+        prompt = [
+            {"role": "system", "content": STYLE_INSTRUCTION},
+            {"role": "user", "content": f"Проанализируй этот сайт и выдели главное в моде на {current_date_str}: {text}"}
+        ]
+        res = await loop.run_in_executor(executor, _simple_text_gen, prompt)
+        await update.message.reply_text(f"🧵 **Анализ ресурса:**\n\n{res}", parse_mode="Markdown")
+
     else:
-        # Обычный чат
+        # Обычный диалог с памятью или без
+        await update.message.reply_chat_action(constants.ChatAction.TYPING)
+        # Если у вас есть user_histories, лучше использовать их здесь
         res = await loop.run_in_executor(executor, _simple_text_gen, [{"role": "user", "content": text}])
         await update.message.reply_text(res)
 
