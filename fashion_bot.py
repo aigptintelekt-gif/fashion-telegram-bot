@@ -88,7 +88,7 @@ def _generate_image_sync(prompt):
     }
     
     payload = {
-        "model": "wanx-v1",
+        "model": "wan2.6-image",
         "input": {"prompt": prompt},
         "parameters": {"n": 1, "size": "1024*1024"}
     }
