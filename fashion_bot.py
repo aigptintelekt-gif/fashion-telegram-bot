@@ -75,9 +75,10 @@ def _generate_image_sync(prompt):
     # Берем ключ напрямую из переменной окружения
     api_key = os.getenv("DASHSCOPE_API_KEY")
     dashscope.api_key = api_key
-    
+    dashscope.base_http_api_url = 'https://dashscope-intl.aliyuncs.com/api/v1'
     try:
         # Используем официальный метод SDK вместо ручных запросов requests
+        logger.info(f"Запуск генерации через SDK (Intl): {prompt}")
         rsp = ImageSynthesis.call(
             model="qwen-image-max",
             prompt=prompt,
