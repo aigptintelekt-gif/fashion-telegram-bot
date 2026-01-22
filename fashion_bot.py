@@ -20,7 +20,6 @@ load_dotenv()
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 DASHSCOPE_API_KEY = os.getenv("DASHSCOPE_API_KEY")
 
-# Настройка DashScope для международного региона
 dashscope.api_key = DASHSCOPE_API_KEY
 dashscope.base_http_api_url = 'https://dashscope-intl.aliyuncs.com/api/v1'
 
@@ -40,8 +39,7 @@ HISTORY_LIMIT = 8
 STYLIST_PERSONALITY = (
     "Ты — ведущий эксперт в Sport-Tech моде и Active Luxury. Твой фокус: кроссовки, умные ткани, мембраны. "
     "Стиль: лаконичный, профессиональный. НЕ используй '***' и много эмодзи. "
-    "Если пользователь просит образ или фото — опиши его как профессиональный стилист, "
-    "упоминая технологичные материалы (графеновое напыление, био-нейлон и т.д.)."
+    "Если пользователь просит образ или фото — опиши его как профессиональный стилист."
 )
 
 # --- МЕНЮ ---
@@ -69,10 +67,12 @@ def _generate_text_sync(messages):
 
 def _generate_image_sync(prompt):
     try:
-        # Используем qwen-image-plus для высокого качества
+        # ДОБАВЛЕНА КОРРЕКЦИЯ: Caucasian/European для избежания азиатских лиц
+        european_prompt = f"Caucasian appearance, European model, {prompt}, professional fashion photography, 8k, highly detailed, realistic style"
+        
         rsp = ImageSynthesis.call(
             model="qwen-image-plus",
-            prompt=f"{prompt}, professional fashion photography, 8k, highly detailed, realistic style",
+            prompt=european_prompt,
             n=1,
             size='1024*1024'
         )
@@ -90,7 +90,7 @@ def _analyze_photo_with_vision(photo_url, user_caption):
             messages=[{
                 "role": "user",
                 "content": [
-                    {"type": "text", "text": f"Analyze this person for a fashion makeover. Request: {user_caption}"},
+                    {"type": "text", "text": f"Analyze this person. Maintain Caucasian/European traits in response. Request: {user_caption}"},
                     {"type": "image_url", "image_url": {"url": photo_url}}
                 ],
             }]
@@ -108,92 +108,93 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['mode'] = 'normal'
     
     await update.message.reply_text(
-        "✨ **ИИ-Стилист 2026 на связи.**\n\nЯ помню наш диалог и готов создавать образы. "
-        "Используй меню или просто напиши: 'Пришли фото мужского образа в стиле теквир'.",
+        "✨ **ИИ-Стилист 2026 на связи.**\n\nЯ помню наш диалог. Теперь я настроен на европейские тренды и готов к работе.",
         reply_markup=get_main_menu(), parse_mode="Markdown"
     )
 
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     caption = update.message.caption or "трендовый образ"
-    await update.message.reply_text("📸 Вижу фото. Анализирую твой стиль...")
+    
+    # ИНТЕРАКТИВ: Показываем статус "ищет локацию" (для фото используем UPLOAD_PHOTO)
+    await update.message.reply_chat_action(constants.ChatAction.TYPING)
+    await update.message.reply_text("📸 Анализирую внешность и подбираю европейский стайлинг...")
     
     photo_file = await update.message.photo[-1].get_file()
     photo_url = photo_file.file_path
     loop = asyncio.get_running_loop()
 
-    await update.message.reply_chat_action(constants.ChatAction.TYPING)
+    # Анализ зрения
     analysis = await loop.run_in_executor(executor, _analyze_photo_with_vision, photo_url, caption)
+    await update.message.reply_text(f"🔍 **Анализ стиля:**\n\n{analysis}")
     
-    await update.message.reply_text(f"🔍 **Мой анализ:**\n\n{analysis}")
-    
+    # Генерация картинки
     await update.message.reply_chat_action(constants.ChatAction.UPLOAD_PHOTO)
     img_url = await loop.run_in_executor(executor, _generate_image_sync, analysis)
     
     if img_url:
-        await update.message.reply_photo(img_url, caption="🌟 Твой персонализированный образ 2026")
+        await update.message.reply_photo(img_url, caption="🌟 Твой персонализированный образ 2026 (European Style)")
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     text = update.message.text
     loop = asyncio.get_running_loop()
     user_mode = context.user_data.get('mode', 'normal')
-    current_date = datetime.now().strftime("%d %B %Y")
 
-    # 1. ОБРАБОТКА КНОПОК
+    # СБРОС
     if text == '🧠 Сброс':
         user_histories[user_id] = [{"role": "system", "content": STYLIST_PERSONALITY}]
         context.user_data['mode'] = 'normal'
         await update.message.reply_text("🧠 Память очищена.", reply_markup=get_main_menu())
         return
 
+    # СПОРТ-ЭКСПЕРТ
     if text == '🏃 Спорт-Эксперт':
         context.user_data['mode'] = 'sport'
-        await update.message.reply_text("🏃 Режим Спорт-Эксперта. Спрашивай о трендах кроссовок или технологиях.")
+        await update.message.reply_text("🏃 Режим Sport-Tech активирован. Жду твой запрос по кроссовкам или технологиям.")
         return
 
-    # 2. ПРОВЕРКА ЗАПРОСА НА ГЕНЕРАЦИЮ КАРТИНКИ
+    # Список триггеров для фото
     image_keywords = ["пришли фото", "покажи фото", "нарисуй", "сгенерируй", "photo", "образ", "стиль"]
     is_drawing_request = any(word in text.lower() for word in image_keywords)
 
-    # 3. ЛОГИКА ДИАЛОГА (СПОРТ ИЛИ ОБЫЧНЫЙ)
+    # ИНТЕРАКТИВ: Постоянно имитируем набор текста, пока бот думает
     await update.message.reply_chat_action(constants.ChatAction.TYPING)
     
     if user_id not in user_histories:
         user_histories[user_id] = [{"role": "system", "content": STYLIST_PERSONALITY}]
 
-    # Добавляем сообщение пользователя в память
     user_histories[user_id].append({"role": "user", "content": text})
 
-    # Генерация текстового ответа
+    # Генерируем текст
     bot_response = await loop.run_in_executor(executor, _generate_text_sync, user_histories[user_id])
     
-    # Отправляем текст
+    # Отправляем текстовый ответ
     try:
         await update.message.reply_text(bot_response, parse_mode="Markdown")
     except:
         await update.message.reply_text(bot_response)
 
-    # 4. ЕСЛИ НУЖНО ФОТО - ГЕНЕРИРУЕМ
+    # Если нужно фото
     if is_drawing_request or user_mode == 'sport':
+        # ИНТЕРАКТИВ: Статус отправки фото
         await update.message.reply_chat_action(constants.ChatAction.UPLOAD_PHOTO)
-        # Берем кусок ответа бота как промпт для картинки
+        
+        # Генерируем картинку с учетом European-тега внутри функции _generate_image_sync
         img_url = await loop.run_in_executor(executor, _generate_image_sync, bot_response[:200])
         
         if img_url:
-            await update.message.reply_photo(img_url, caption="✨ Визуализация концепта")
+            await update.message.reply_photo(img_url, caption="📊 Визуализация образа (European Concept)")
     
-    # Обновляем память бота ответом
     user_histories[user_id].append({"role": "assistant", "content": bot_response})
     
-    # Ограничение памяти
+    # Обрезка истории
     if len(user_histories[user_id]) > HISTORY_LIMIT:
         user_histories[user_id] = [user_histories[user_id][0]] + user_histories[user_id][-(HISTORY_LIMIT-1):]
 
-# --- ЗАПУСК ---
 if __name__ == "__main__":
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
-    print("🚀 Бот-Стилист запущен!")
+    print("🚀 Бот запущен! Интерактив и European-модели активны.")
     app.run_polling()
