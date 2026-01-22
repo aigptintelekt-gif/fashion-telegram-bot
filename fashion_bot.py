@@ -1,281 +1,242 @@
-# ----------------- imports -----------------
-from dotenv import load_dotenv
 import os
-from pathlib import Path
-import base64
-import io
-import requests
-import traceback
+import logging
+import asyncio
+import requests # Не забудьте добавить в импорты в начало файла
+from concurrent.futures import ThreadPoolExecutor
+from dotenv import load_dotenv
 
 # Telegram
-from telegram import Update
-from telegram.ext import Application, CommandHandler, MessageHandler, filters
-from telegram.constants import ChatAction
+from telegram import Update, constants
+from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
 
-# Pillow для уменьшения фото
-from PIL import Image
-
-# ----------------- .env -----------------
-env_path = Path(__file__).parent / ".env"
-load_dotenv(dotenv_path=env_path)
-
-print("Файл существует?", env_path.exists())
-if env_path.exists():
-    print("Содержимое файла:", env_path.read_text())
-
-DASHSCOPE_API_KEY = os.getenv("DASHSCOPE_API_KEY")
+# DashScope / OpenAI
+from openai import OpenAI
+import dashscope
+from dashscope import ImageSynthesis
+# Настройка для СИНГАПУРСКОГО региона (International)
+dashscope.api_key = os.getenv("DASHSCOPE_API_KEY") # Ваш ключ из этой консоли
+dashscope.base_http_api_url = 'https://dashscope-intl.aliyuncs.com/api/v1'
+# --- КОНФИГУРАЦИЯ ---
+load_dotenv()
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-
-print("TELEGRAM_TOKEN:", TELEGRAM_TOKEN)
-print("DASHSCOPE_API_KEY:", DASHSCOPE_API_KEY)
-
+DASHSCOPE_API_KEY = os.getenv("DASHSCOPE_API_KEY")
+# ПРОВЕРКА: Напечатаем первые 5 символов ключа в консоль при запуске (для отладки)
+if DASHSCOPE_API_KEY:
+    print(f"Ключ загружен: {DASHSCOPE_API_KEY[:5]}***")
+else:
+    print("ОШИБКА: Ключ не найден в .env!")
+dashscope.api_key = DASHSCOPE_API_KEY
+# Проверка ключей
 if not TELEGRAM_TOKEN or not DASHSCOPE_API_KEY:
-    raise ValueError("❌ Не найдены токены! Проверь файл .env")
+    raise ValueError("ОШИБКА: Проверьте файл .env. Не найдены ключи!")
 
-# ----------------- DashScope API (совместимый режим) -----------------
-DASHSCOPE_BASE_URL = "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions"
+dashscope.api_key = DASHSCOPE_API_KEY
 
-QWEN_MODEL_NAME = "qwen-vl-max"  # или qwen-vl-plus, если у вас есть доступ
+# Настройка логов
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
+logger = logging.getLogger(__name__)
 
-# ----------------- System Prompt -----------------
-FASHION_SYSTEM_PROMPT = """Ты — экспертный AI-агент в области fashion-индустрии, сочетающий роли профессионального стилиста и продюсера.
+# Настройка клиента для текста (Qwen)
+text_client = OpenAI(
+    api_key=DASHSCOPE_API_KEY,
+    base_url="https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
+)
 
-🎨 КАК СТИЛИСТ:
-- Анализируй образы с профессиональной точки зрения
-- Давай конкретные, применимые советы по стилю
-- Учитывай типы фигур, цветотипы, lifestyle клиента
-- Создавай капсульные гардеробы и луки
-- Рекомендуй сочетания вещей и аксессуаров
-- Следи за актуальными трендами
+# Пул потоков для выполнения тяжелых запросов без блокировки бота
+executor = ThreadPoolExecutor(max_workers=4)
 
-🎬 КАК ПРОДЮСЕР:
-- Помогай планировать fashion-проекты
-- Консультируй по бюджету и таймингу съемок
-- Давай советы по выбору команды
-- Помогай с концепцией и настроением проекта
-- Консультируй по локациям и реквизиту
+# --- ПАМЯТЬ (Хранилище в оперативной памяти) ---
+user_histories = {}
+HISTORY_LIMIT = 10  # Сколько сообщений хранить
 
-СТИЛЬ ОБЩЕНИЯ:
-- Профессиональный, дружелюбный, вдохновляющий
-- Используй модную терминологию, но объясняй сложные понятия
-- Будь конкретным
-- Эмодзи умеренно (✨, 👗, 💫, 🎨)
+# --- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ (Синхронные) ---
 
-При анализе фото:
-- Детально описывай что видишь
-- Выделяй удачные элементы
-- Предлагай улучшения тактично
-- Рекомендуй конкретные альтернативы
-"""
-
-# ----------------- Хранилище истории -----------------
-user_conversations = {}
-
-# ----------------- Вспомогательная функция для вызова Qwen API (совместимый режим) -----------------
-def call_qwen_api(messages, is_vision=False):
-    headers = {
-        "Authorization": f"Bearer {DASHSCOPE_API_KEY}",
-        "Content-Type": "application/json"
-    }
-
-    payload = {
-        "model": QWEN_MODEL_NAME,
-        "messages": messages,
-        "temperature": 0.7,
-        "max_tokens": 1024,
-        "top_p": 0.9
-    }
-
+def _generate_text_sync(messages):
+    """Отправляет историю переписки в Qwen-Plus"""
     try:
-        print("Отправляю запрос к DashScope API (совместимый режим)...")
-        response = requests.post(DASHSCOPE_BASE_URL, headers=headers, json=payload, timeout=30)
-        print(f"Статус ответа: {response.status_code}")
-        print(f"Тело ответа: {response.text[:500]}...")
-
-        response.raise_for_status()
-        result = response.json()
-
-        # Извлечение текста из ответа (новый формат как у OpenAI)
-        text = result.get('choices', [{}])[0].get('message', {}).get('content', '')
-        print("Ответ от API успешно получен.")
-        return text
-    except requests.exceptions.ConnectionError as e:
-        print(f"Ошибка подключения к API: {e}")
-        return "Ошибка подключения к API. Проверьте доступность."
-    except requests.exceptions.Timeout as e:
-        print(f"Таймаут при обращении к API: {e}")
-        return "Таймаут при обращении к API."
-    except requests.exceptions.HTTPError as e:
-        print(f"HTTP ошибка: {e}")
-        print(f"Тело ошибки: {response.text}")
-        return f"HTTP ошибка: {e}"
-    except requests.exceptions.RequestException as e:
-        print(f"Ошибка запроса: {e}")
-        print(traceback.format_exc())
-        return "Ошибка при обращении к API."
+        response = text_client.chat.completions.create(
+            model="qwen-plus",
+            messages=messages,
+            temperature=0.7 # Сделаем ответы чуть более креативными
+        )
+        return response.choices[0].message.content
     except Exception as e:
-        print(f"Неизвестная ошибка: {e}")
-        print(traceback.format_exc())
-        return "Неизвестная ошибка."
+        logger.error(f"Text Gen Error: {e}")
+        return "Прости, произошла ошибка при генерации ответа."
 
 
-# ----------------- Обработчики -----------------
-async def start(update, context):
-    user_id = update.effective_user.id
-    user_name = update.effective_user.first_name
-    user_conversations[user_id] = []
+def _generate_image_sync(prompt):
 
-    welcome_message = f"""👋 Привет, {user_name}! Я — твой Fashion AI Agent!
-
-✨ **Мои специализации:**
-• Анализ образов
-• Капсульные гардеробы
-• Советы по трендам и сочетаниям
-• Планирование fashion-проектов
-• Консультирую по продюсированию
-
-💡 **Как использовать:**
-• Отправь фото для анализа
-• Задай вопрос о стиле или трендах
-• Попроси помочь спланировать проект
-
-**Команды:**
-/start - Начать сначала
-/clear - Очистить историю диалога
-/help - Примеры вопросов
-
-🚀 Работает на Qwen AI (Alibaba Cloud)"""
-    await update.message.reply_text(welcome_message)
-
-
-async def help_command(update, context):
-    help_text = """💡 **Примеры вопросов:**
-• "Помоги создать капсульный гардероб для весны"
-• "Какие цвета мне подойдут?"
-• "Как собрать образ для собеседования?"
-• "Что носить с джинсами?"
-• "Проанализируй мой образ на фото"
-• "Как спланировать fashion-съемку с бюджетом 50к?"
-• "Какие тренды актуальны сейчас?"
-"""
-    await update.message.reply_text(help_text)
-
-
-async def clear_history(update, context):
-    user_id = update.effective_user.id
-    user_conversations[user_id] = []
-    await update.message.reply_text("✨ История диалога очищена!")
-
-
-# ----------------- Текстовые сообщения -----------------
-async def handle_message(update, context):
-    user_id = update.effective_user.id
-    user_message = update.message.text
-
-    if user_id not in user_conversations:
-        user_conversations[user_id] = []
-
-    user_conversations[user_id].append({"role": "user", "content": {"type": "text", "text": user_message}})
-    await update.message.chat.send_action(ChatAction.TYPING)
+    global DASHSCOPE_API_KEY
 
     try:
-        # Подготовка сообщений для Qwen (только текст)
-        messages = [
-            {"role": "system", "content": {"type": "text", "text": FASHION_SYSTEM_PROMPT}},
-        ]
-        messages.extend(user_conversations[user_id])
-
-        assistant_message = call_qwen_api(messages, is_vision=False)
-
-        user_conversations[user_id].append({"role": "assistant", "content": {"type": "text", "text": assistant_message}})
-
-        # Ограничиваем историю последних 20 сообщений
-        if len(user_conversations[user_id]) > 20:
-            user_conversations[user_id] = user_conversations[user_id][-20:]
-
-        await update.message.reply_text(assistant_message)
-
-    except Exception as e:
-        await update.message.reply_text(f"😔 Произошла ошибка: {e}\nПопробуйте /clear.")
-        print(f"Text error: {e}")
-
-
-# ----------------- Фото сообщения -----------------
-async def handle_photo(update, context):
-    user_id = update.effective_user.id
-    if user_id not in user_conversations:
-        user_conversations[user_id] = []
-
-    await update.message.chat.send_action(ChatAction.UPLOAD_PHOTO)
-
-    try:
-        photo = update.message.photo[-1]
-        photo_file = await photo.get_file()
-        photo_bytes = await photo_file.download_as_bytearray()
-
-        # Уменьшаем изображение
-        image = Image.open(io.BytesIO(photo_bytes))
-        image = image.convert("RGB")  # Убедимся, что это RGB
-        image.thumbnail((1024, 1024))  # ограничиваем размер
-        buffer = io.BytesIO()
-        image.save(buffer, format="JPEG", quality=85)
-        photo_base64 = base64.b64encode(buffer.getvalue()).decode("utf-8")
-
-        caption = update.message.caption or "Проанализируй этот образ детально."
-
-        # Подготовка сообщений для Qwen (текст + изображение)
-        messages = [
-            {"role": "system", "content": {"type": "text", "text": FASHION_SYSTEM_PROMPT}},
-        ]
-
-        # Добавляем предыдущие сообщения (если есть)
-        messages.extend(user_conversations[user_id][:-1])  # все кроме последнего
-
-        # Последнее сообщение пользователя: текст + изображение
-        last_message_with_image = {
-            "role": "user",
-            "content": [
-                {"type": "text", "text": caption},
-                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{photo_base64}"}}
-            ]
+        url = "https://dashscope-intl.aliyuncs.com/api/v1"
+        
+        headers = {
+            "Authorization": f"Bearer {DASHSCOPE_API_KEY}",
+            "Content-Type": "application/json",
+            "X-DashScope-Async": "enable" ,# Включаем асинхронный режим
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
+            }
+        
+        payload = {
+            "model": "qwen-image-max",
+            "input": {
+                "prompt": prompt
+            },
+            "parameters": {
+                "n": 1,
+                "size": "1024*1024"
+            }
         }
-        messages.append(last_message_with_image)
 
-        await update.message.chat.send_action(ChatAction.TYPING)
+        # 1. Создаем задачу на генерацию
+        response = requests.post(url, headers=headers, json=payload)
+        res_data = response.json()
+        
+        if response.status_code != 200:
+            logger.error(f"Ошибка создания задачи: {res_data}")
+            return None
 
-        # Вызов Qwen API с изображением
-        assistant_message = call_qwen_api(messages, is_vision=True)
+        task_id = res_data['output']['task_id']
+        task_url = f"https://dashscope-intl.aliyuncs.com/api/v1/tasks/{task_id}"
 
-        user_conversations[user_id].append({"role": "assistant", "content": {"type": "text", "text": assistant_message}})
-
-        # Ограничиваем историю последних 20 сообщений
-        if len(user_conversations[user_id]) > 20:
-            user_conversations[user_id] = user_conversations[user_id][-20:]
-
-        await update.message.reply_text(assistant_message)
-
+        # 2. Ждем готовности (проверка каждые 2 секунды)
+        for _ in range(30): # Ждем максимум 60 секунд
+            await_res = requests.get(task_url, headers=headers).json()
+            status = await_res['output']['task_status']
+            
+            if status == 'SUCCEEDED':
+                return await_res['output']['results'][0]['url']
+            elif status == 'FAILED':
+                logger.error(f"Задача провалена: {await_res}")
+                return None
+            
+            asyncio.run(asyncio.sleep(2)) # Пауза между проверками
+            
+        return None
     except Exception as e:
-        await update.message.reply_text(f"⚠️ Ошибка обработки фото: {e}\nПопробуйте отправить уменьшенное фото.")
-        print(f"Photo error: {e}")
+        logger.error(f"Ошибка в _generate_image_sync: {e}")
+        return None
+# --- ОБРАБОТЧИКИ TELEGRAM ---
 
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    user_histories[user_id] = [] # Сброс памяти при старте
+    
+    await update.message.reply_text(
+        "Привет! Я твой личный ИИ-стилист.\n\n"
+        "🧠 **Я помню наш диалог.** Просто пиши мне.\n"
+        "✨ **Я могу создавать образы!** Запроси, например: `Покажи мужской трендовый образ зима 2026`.\n"
+        "🔄 `/reset` — чтобы очистить память и начать новую тему."
+    , parse_mode="Markdown")
 
-# ----------------- Основная функция -----------------
-def main():
-    print("=" * 50)
-    print("🚀 Запускаю Fashion AI Telegram Bot (Qwen)")
-    print("=" * 50)
+async def reset_memory(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    user_histories[user_id] = []
+    await update.message.reply_text("🧠 Память очищена! О чем поговорим теперь?")
 
-    app = Application.builder().token(TELEGRAM_TOKEN).build()
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    user_text = update.message.text
+    loop = asyncio.get_running_loop()
+
+    if not user_text:
+        return
+
+    # 1. Список слов, которые сигнализируют о желании увидеть картинку
+    image_keywords = ["пришли фото", "покажи фото", "нарисуй", "сгенерируй", "photo", "картинка", "фото:", "образ", "стиль"]
+    
+    # Проверяем, есть ли хоть одно слово из списка в сообщении пользователя
+    # Игнорируем "фото:" здесь, т.к. его можно убрать отдельно ниже
+    is_drawing_request = any(word in user_text.lower() for word in image_keywords)
+
+    if is_drawing_request:
+        # --- ЛОГИКА ДЛЯ ГЕНЕРАЦИИ ТЕКСТА + КАРТИНКИ ---
+        await update.message.reply_chat_action(constants.ChatAction.TYPING) # Показываем "печатает..."
+        
+        # Подготавливаем промпт для текстовой модели, чтобы она сгенерировала описание
+        # Если пользователь просил "пришли фото ...", убираем "пришли фото"
+        text_generation_prompt = user_text
+        for keyword in ["пришли фото", "покажи фото", "нарисуй", "сгенерируй", "photo:", "картинка:"]:
+            text_generation_prompt = text_generation_prompt.lower().replace(keyword, "").strip()
+        
+        if not text_generation_prompt: # Если осталось пусто после очистки
+            text_generation_prompt = user_text 
+        
+        # Добавляем инструкцию для стилиста
+        full_text_prompt_messages = [
+            {"role": "system", "content": "Ты модный стилист. Подробно опиши трендовый образ, который пользователь запросил. Не упоминай, что ты ИИ, и что ты не можешь показывать фото. Просто дай описание, как профессионал.Пиши кратко и по делу, не более 2000 знаков"},
+            {"role": "user", "content": f"Опиши трендовый образ на тему: {text_generation_prompt}"}
+        ]
+    
+        # Генерируем подробное текстовое описание
+        # 1. Генерируем описание
+        stylist_description = await loop.run_in_executor(executor, _generate_text_sync, full_text_prompt_messages)
+        
+        # 2. ОЧЕНЬ ВАЖНО: Безопасная отправка текста
+        try:
+            # Пытаемся отправить с Markdown
+            await update.message.reply_text(stylist_description, parse_mode="Markdown")
+        except Exception as e:
+            # Если Markdown сломался (как в вашем логе), отправляем просто чистый текст
+            logger.warning(f"Markdown error at offset, sending plain text: {e}")
+            await update.message.reply_text(stylist_description, parse_mode=None)
+
+        # 3. Переходим к генерации картинки
+        await update.message.reply_chat_action(constants.ChatAction.UPLOAD_PHOTO)
+        
+        # Для промпта картинки лучше использовать короткую версию, 
+        # чтобы модель не путалась в длинных описаниях
+        image_prompt = f"Трендовый образ: {text_generation_prompt}. Professional fashion photography, male model, winter 2026 trend, high detail."
+        
+        image_url = await loop.run_in_executor(executor, _generate_image_sync, image_prompt)
+        
+        if image_url:
+            await update.message.reply_photo(image_url, caption="✨ Визуализация вашего образа 2026")
+        else:
+            await update.message.reply_text("Не удалось сгенерировать изображение, но описание выше!")
+        
+        # Важно: После генерации фото и текста - очищаем историю для этой конкретной "фотки"
+        # Чтобы дальнейший диалог не был засорен промптом стилиста
+        if user_id in user_histories:
+            user_histories[user_id] = [user_histories[user_id][0]] # Оставляем только системный промпт
+        return
+
+    # --- ЛОГИКА ТЕКСТА (если это просто беседа и не было запроса на картинку) ---
+    if user_id not in user_histories:
+        # Системный промпт для общего диалога
+        user_histories[user_id] = [{
+            "role": "system", 
+            "content": "Ты полезный и умный ассистент. Отвечай на вопросы пользователя и веди диалог."
+        }]
+
+    user_histories[user_id].append({"role": "user", "content": user_text})
+    
+    # Ограничение памяти
+    if len(user_histories[user_id]) > HISTORY_LIMIT:
+        user_histories[user_id] = [user_histories[user_id][0]] + user_histories[user_id][-(HISTORY_LIMIT-1):]
+
+    await update.message.reply_chat_action(constants.ChatAction.TYPING)
+    bot_response = await loop.run_in_executor(executor, _generate_text_sync, user_histories[user_id])
+    
+    user_histories[user_id].append({"role": "assistant", "content": bot_response})
+    
+    try:
+        await update.message.reply_text(bot_response, parse_mode="Markdown")
+    except:
+        await update.message.reply_text(bot_response)
+
+# --- ЗАПУСК ---
+if __name__ == "__main__":
+    app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("help", help_command))
-    app.add_handler(CommandHandler("clear", clear_history))
+    app.add_handler(CommandHandler("reset", reset_memory))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
 
-    print("✅ Бот успешно запущен и готов к работе!")
+    print("Бот запущен! Нажмите Ctrl+C для остановки.")
     app.run_polling()
-
-
-if __name__ == "__main__":
-    main()
