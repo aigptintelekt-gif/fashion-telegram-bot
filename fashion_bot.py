@@ -3,7 +3,9 @@ import logging
 import asyncio
 import requests
 import json
+import time
 from concurrent.futures import ThreadPoolExecutor
+from dotenv import load_dotenv
 from http import HTTPStatus
 
 # Telegram
@@ -16,6 +18,7 @@ import dashscope
 from dashscope import ImageSynthesis
 
 # --- ИНИЦИАЛИЗАЦИЯ ---
+load_dotenv()
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 DASHSCOPE_API_KEY = os.getenv("DASHSCOPE_API_KEY")
 
@@ -26,101 +29,139 @@ logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s
 logger = logging.getLogger(__name__)
 executor = ThreadPoolExecutor(max_workers=4)
 
-# Клиент для зрения и текста
+# Клиент для OpenAI-совместимого режима (Зрение и Текст)
 client = OpenAI(
     api_key=DASHSCOPE_API_KEY,
     base_url="https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
 )
 
-# --- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ---
+# --- МЕНЮ ---
+def get_main_menu():
+    keyboard = [['🚀 Тренды 2026', '👔 Одень меня'], ['🗞 Новости моды', '🧠 Сброс']]
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
-def _analyze_photo_and_create_prompt(photo_url, user_caption):
-    """
-    Модель Qwen-VL 'смотрит' на фото и создает описание для генератора
-    """
+# --- ТЕХНИЧЕСКИЕ ФУНКЦИИ (СИНХРОННЫЕ) ---
+
+def _analyze_photo_with_vision(photo_url, user_caption):
+    """Qwen-VL анализирует фото и создает промпт для переодевания"""
     try:
+        prompt = (
+            f"Analyze this person. User wants: {user_caption}. "
+            "Describe the person's ethnicity, hair color, and gender exactly as they appear. "
+            "Then, create a highly detailed fashion prompt for 2026 autumn style. "
+            "The prompt must be in English, focus on 'Full body shot, high fashion editorial'. "
+            "Crucial: specify the ethnicity (e.g. Caucasian, Hispanic, etc.) to prevent default Asian features."
+        )
+        
         response = client.chat.completions.create(
-            model="qwen-vl-plus", # Используем визуальную модель
-            messages=[
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": f"Проанализируй одежду и внешность человека на этом фото. Учти пожелание пользователя: {user_caption}. Составь подробный промпт на английском языке для генерации похожего образа в трендах 2026 года. ВАЖНО: Укажи конкретную внешность (например, Caucasian или Latin), чтобы избежать азиатских черт по умолчанию. Опиши только одежду и окружение."},
-                        {"type": "image_url", "image_url": {"url": photo_url}}
-                    ],
-                }
-            ]
+            model="qwen-vl-plus",
+            messages=[{
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt},
+                    {"type": "image_url", "image_url": {"url": photo_url}}
+                ],
+            }]
         )
         return response.choices[0].message.content
     except Exception as e:
-        logger.error(f"Ошибка зрения: {e}")
-        return f"Fashion photography, 2026 trend, realistic skin, diverse features, {user_caption}"
+        logger.error(f"Vision error: {e}")
+        return f"Fashion photography, 2026 trend, high detail, {user_caption}"
 
-def _generate_image_sync(final_prompt):
-    """Генерация финального изображения"""
+def _generate_face_ref_image(prompt, ref_image_url):
+    """Генерация Wanx с использованием ссылки на лицо (Face Reference)"""
     try:
-        # Добавляем технические параметры для реализма и исключения азиатских черт
-        enhanced_prompt = f"{final_prompt}, photorealistic, highly detailed, global fashion look, realistic facial features, 8k resolution"
-        
+        # Режим face_ref позволяет сохранить лицо с оригинала
         rsp = ImageSynthesis.call(
-            api_key=DASHSCOPE_API_KEY,
-            model="qwen-image-plus",
-            prompt=enhanced_prompt,
-            n=1,
-            size='1024*1024',
-            prompt_extend=True
+            model="wanx-v1",
+            prompt=f"{prompt}, realistic skin, masterwork, 8k",
+            extra_input={"ref_image": ref_image_url},
+            parameters={
+                "ref_mode": "face_ref", # КЛЮЧЕВОЙ ПАРАМЕТР для сохранения лица
+                "n": 1,
+                "size": "1024*1024"
+            }
         )
         if rsp.status_code == HTTPStatus.OK:
             return rsp.output.results[0].url
+        logger.error(f"Wanx error: {rsp.message}")
         return None
     except Exception as e:
-        logger.error(f"Ошибка генерации: {e}")
+        logger.error(f"Generation error: {e}")
         return None
 
-# --- ОБРАБОТЧИКИ ---
+def _simple_text_gen(messages):
+    try:
+        response = client.chat.completions.create(
+            model="qwen-plus",
+            messages=messages,
+            temperature=0.7
+        )
+        return response.choices[0].message.content
+    except Exception as e:
+        return f"Ошибка: {e}"
 
-async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    caption = update.message.caption or "сделай в трендах 2026"
-    
-    await update.message.reply_text("📸 **Вижу фото!** Сейчас я его 'изучу' и подберу образ... ⏳")
-    await update.message.reply_chat_action(constants.ChatAction.TYPING)
-
-    # 1. Получаем прямую ссылку на фото из Телеграма
-    photo_file = await update.message.photo[-1].get_file()
-    # Временная ссылка для API (Telegram позволяет скачивать через bot token)
-    photo_url = photo_file.file_path 
-
-    loop = asyncio.get_running_loop()
-
-    # 2. Просим ИИ 'увидеть' фото и составить промпт
-    visual_description = await loop.run_in_executor(executor, _analyze_photo_and_create_prompt, photo_url, caption)
-    
-    await update.message.reply_text(f"🧵 **Мой анализ:**\n{visual_description[:300]}...")
-    await update.message.reply_chat_action(constants.ChatAction.UPLOAD_PHOTO)
-
-    # 3. Генерируем новый образ на основе этого анализа
-    new_image_url = await loop.run_in_executor(executor, _generate_image_sync, visual_description)
-
-    if new_image_url:
-        await update.message.reply_photo(new_image_url, caption="✨ Твоё преображение готово! \nЯ учел твои черты лица и текущие тренды 2026.")
-    else:
-        await update.message.reply_text("Что-то пошло не так при отрисовке, но я сохранил твои идеи! 👗")
-
-# --- ОСТАЛЬНЫЕ ФУНКЦИИ (Меню, Старт) ---
-def get_main_menu():
-    return ReplyKeyboardMarkup([['🚀 Тренды 2026', '👗 Одень меня'], ['🧠 Сброс']], resize_keyboard=True)
+# --- ОБРАБОТЧИКИ ТЕЛЕГРАМ ---
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "👔 **Привет! Я твой ИИ-стилист с глазами.**\nОтправь мне фото, и я разберу твой образ!", 
-        reply_markup=get_main_menu()
+        "✨ **ИИ-стилист 2026 приветствует тебя!** ✨\n\n"
+        "Я научился **сохранять твоё лицо** при переодевании. Просто пришли фото и напиши, что хочешь примерить!",
+        reply_markup=get_main_menu(), parse_mode="Markdown"
     )
 
+async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    caption = update.message.caption or "трендовый образ 2026"
+    
+    await update.message.reply_text("🔎 **Изучаю твою внешность и стиль...**")
+    
+    # Получаем путь к фото
+    photo_file = await update.message.photo[-1].get_file()
+    photo_url = photo_file.file_path # Ссылка для ИИ
+    
+    loop = asyncio.get_running_loop()
+    
+    # 1. Анализируем фото (Зрение)
+    await update.message.reply_chat_action(constants.ChatAction.TYPING)
+    styled_prompt = await loop.run_in_executor(executor, _analyze_photo_with_vision, photo_url, caption)
+    
+    # 2. Генерируем новый лук с сохранением лица
+    await update.message.reply_text("👗 **Примеряю новый образ... Сохраняю твои черты лица.**")
+    await update.message.reply_chat_action(constants.ChatAction.UPLOAD_PHOTO)
+    
+    final_image = await loop.run_in_executor(executor, _generate_face_ref_image, styled_prompt, photo_url)
+    
+    if final_image:
+        await update.message.reply_photo(final_image, caption="🌟 Твой новый образ готов! \nЯ сохранил твоё лицо и адаптировал стиль под 2026 год. 😍")
+    else:
+        await update.message.reply_text("❌ Ошибка при примерке. Попробуй другое фото!")
+
+async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text
+    loop = asyncio.get_running_loop()
+
+    if text == '🚀 Тренды 2026':
+        res = await loop.run_in_executor(executor, _simple_text_gen, [{"role": "user", "content": "Главные тренды моды 2026 со смайликами"}])
+        await update.message.reply_text(res)
+    elif text == '👔 Одень меня':
+        await update.message.reply_text("Просто пришли мне своё фото (портрет или в полный рост)!")
+    elif "http" in text:
+        await update.message.reply_text("🔎 Сканирую тренды по ссылке...")
+        res = await loop.run_in_executor(executor, _simple_text_gen, [{"role": "user", "content": f"Выдели тренды с сайта: {text}"}])
+        await update.message.reply_text(res)
+    else:
+        # Обычный чат
+        res = await loop.run_in_executor(executor, _simple_text_gen, [{"role": "user", "content": text}])
+        await update.message.reply_text(res)
+
+# --- ЗАПУСК ---
 if __name__ == "__main__":
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
+    
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
-    # Добавь сюда обработчик текста из предыдущего кода
-    print("🚀 Бот-стилист с функцией зрения запущен!")
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
+    
+    print("🚀 Бот-стилист 'Face-Keep' запущен!")
     app.run_polling()
