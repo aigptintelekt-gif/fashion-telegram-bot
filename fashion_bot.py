@@ -10,10 +10,10 @@ from http import HTTPStatus
 from telegram import Update, constants, ReplyKeyboardMarkup
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
 
-# DashScope / OpenAI
-from openai import OpenAI
+# DashScope
 import dashscope
 from dashscope import ImageSynthesis
+from openai import OpenAI
 
 # --- КОНФИГУРАЦИЯ ---
 load_dotenv()
@@ -32,145 +32,118 @@ client = OpenAI(
     base_url="https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
 )
 
-# --- ЛИЧНОСТЬ: КРЕАТИВНЫЙ ДИРЕКТОР СЪЕМОК ---
+# Хранилища
+user_histories = {}
+user_faces = {} # Новое: храним URL последней фотографии пользователя
+
 STYLIST_PERSONALITY = (
-    "Ты — Fashion-директор и ведущий стилист на съемочной площадке. Твоя специализация: Sport-Tech и Active Luxury. "
-    "Ты мыслишь кадрами, освещением и текстурами. Твой стиль общения: экспертный, лаконичный, с использованием "
-    "профессионального сленга (look, layering, silhouette, set design). "
-    "Всегда ориентируешься на европейские модели и премиальный уровень исполнения."
+    "Ты — Fashion-директор. Твоя специализация: Sport-Tech и Active Luxury. "
+    "Ты создаешь образы уровня 2026 года, фокусируясь на европейской премиальной эстетике."
 )
 
-# --- МЕНЮ ---
 def get_main_menu():
-    keyboard = [
-        ['🚀 Тренды 2026', '🏃 Спорт-Эксперт'],
-        ['🎨 Создать промпт + Фото', '🗞 Новости моды'],
-        ['👔 Одень меня', '🧠 Сброс']
-    ]
+    keyboard = [['🚀 Тренды 2026', '🏃 Спорт-Эксперт'], ['🎨 Создать промпт + Фото', '🗞 Новости моды'], ['👔 Одень меня', '🧠 Сброс']]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
-# --- ТЕХНИЧЕСКИЕ ФУНКЦИИ ---
+# --- УЛУЧШЕННАЯ ГЕНЕРАЦИЯ С УЧЕТОМ ЛИЦА ---
 
-def _simple_text_gen(messages):
+def _generate_image_with_face(prompt, base_face_url=None):
     try:
-        response = client.chat.completions.create(
-            model="qwen-plus",
-            messages=messages,
-            temperature=0.7
-        )
-        return response.choices[0].message.content
-    except Exception as e:
-        logger.error(f"Text Error: {e}")
-        return "Ошибка при генерации текста."
+        # Если есть фото лица, добавляем его как референс (Image-to-Image / Face Ref)
+        extra_params = {}
+        if base_face_url:
+            # Для модели Wanx использование ref_img позволяет сохранить сходство
+            extra_params = {
+                "ref_img": base_face_url,
+                "ref_mode": "face_ref" # Специальный режим удержания лица
+            }
 
-def _generate_image_sync(prompt):
-    try:
         rsp = ImageSynthesis.call(
-            model="qwen-image-plus",
-            prompt=prompt,
+            model="wanx-v1", # Wanx лучше справляется с референсами
+            prompt=f"Professional fashion photography, {prompt}, high detail, masterpiece",
             n=1,
-            size='1024*1024'
+            size='1024*1024',
+            **extra_params
         )
         if rsp.status_code == HTTPStatus.OK:
             return rsp.output.results[0].url
         return None
     except Exception as e:
-        logger.error(f"Image Error: {e}")
+        logger.error(f"Image Gen Error: {e}")
         return None
+
+def _simple_text_gen(messages):
+    try:
+        res = client.chat.completions.create(model="qwen-plus", messages=messages)
+        return res.choices[0].message.content
+    except: return "Ошибка текста."
 
 # --- ОБРАБОТЧИКИ ---
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    user_histories[user_id] = [{"role": "system", "content": STYLIST_PERSONALITY}]
-    context.user_data['mode'] = 'normal'
+    await update.message.reply_chat_action(constants.ChatAction.TYPING)
+    
+    # Получаем URL фото
+    photo_file = await update.message.photo[-1].get_file()
+    user_faces[user_id] = photo_file.file_path # Сохраняем лицо
     
     await update.message.reply_text(
-        "🎬 **Creative Director на площадке.**\n\nГотов к созданию визуального контента уровня 2026 года. "
-        "Используй меню для аналитики или выбери режим генерации промптов для съемок.",
-        reply_markup=get_main_menu(), parse_mode="Markdown"
+        "👤 **Лицо зафиксировано!**\nТеперь при создании образов я буду использовать твою внешность. "
+        "Попробуй нажать '🎨 Создать промпт + Фото' или напиши запрос.",
+        reply_markup=get_main_menu()
     )
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     text = update.message.text
     loop = asyncio.get_running_loop()
-    current_mode = context.user_data.get('mode', 'normal')
+    mode = context.user_data.get('mode', 'normal')
 
     if text == '🧠 Сброс':
-        user_histories[user_id] = [{"role": "system", "content": STYLIST_PERSONALITY}]
+        user_histories[user_id] = []
+        user_faces[user_id] = None
         context.user_data['mode'] = 'normal'
-        await update.message.reply_text("🧠 Площадка очищена. Жду новых задач.", reply_markup=get_main_menu())
+        await update.message.reply_text("🧠 Память и лицо очищены.", reply_markup=get_main_menu())
         return
 
-    # РЕЖИМ ПРОФЕССИОНАЛЬНОГО ПРОМПТА
     if text == '🎨 Создать промпт + Фото':
         context.user_data['mode'] = 'prompt_gen'
-        await update.message.reply_text("📽 **Опиши концепцию съемки.**\nЯ разработаю техническое задание для камеры и стилизацию кадра.")
+        await update.message.reply_text("📽 **Опиши концепцию.** Я интегрирую твоё лицо в этот образ.")
         return
 
-    if current_mode == 'prompt_gen':
+    # Логика генерации
+    if mode == 'prompt_gen' or any(kw in text.lower() for kw in ["фото", "образ"]):
         await update.message.reply_chat_action(constants.ChatAction.TYPING)
         
-        # 1. Генерация промпта + совета
-        combined_prompt = [
-            {"role": "system", "content": (
-                "You are a Creative Director for a high-end fashion shoot. "
-                "Step 1: Generate a technical English prompt for an AI image generator. "
-                "Specify: European model, Phase One XF camera, 80mm lens, studio or urban tech lighting, "
-                "detailed fabric textures (Gore-Tex, technical silk). "
-                "Step 2: Add a short 'Backstage Advice' in Russian for the stylist on set. "
-                "Format: [PROMPT] text [/PROMPT] [ADVICE] text [/ADVICE]"
-            )},
-            {"role": "user", "content": text}
-        ]
+        # 1. Улучшаем промпт
+        magic_prompt = [{"role": "system", "content": "Create a high-fashion prompt in English. Focused on European style."}, {"role": "user", "content": text}]
+        refined_text = await loop.run_in_executor(executor, _simple_text_gen, magic_prompt)
         
-        raw_res = await loop.run_in_executor(executor, _simple_text_gen, combined_prompt)
-        
-        # Парсинг ответа
-        try:
-            p_start, p_end = raw_res.find("[PROMPT]") + 8, raw_res.find("[/PROMPT]")
-            a_start, a_end = raw_res.find("[ADVICE]") + 8, raw_res.find("[/ADVICE]")
-            refined_text = raw_res[p_start:p_end].strip()
-            advice_text = raw_res[a_start:a_end].strip()
-        except:
-            refined_text, advice_text = raw_res, "Держи фокус на динамике образа."
-
-        # Отправка промпта и совета
-        await update.message.reply_text(f"✨ **Technical Prompt:**\n\n`{refined_text}`", parse_mode="Markdown")
-        await update.message.reply_text(f"💡 **Совет со съемок:**\n_{advice_text}_", parse_mode="Markdown")
-        
-        # 2. Генерация изображения
+        # 2. Генерируем с лицом или без
         await update.message.reply_chat_action(constants.ChatAction.UPLOAD_PHOTO)
-        img_url = await loop.run_in_executor(executor, _generate_image_sync, refined_text)
+        face_url = user_faces.get(user_id)
+        
+        if face_url:
+            await update.message.reply_text("🎭 **Применяю твои черты лица к новому образу...**")
+        
+        img_url = await loop.run_in_executor(executor, _generate_image_with_face, refined_text, face_url)
         
         if img_url:
-            await update.message.reply_photo(img_url, caption="📸 Финальный кадр (Shot on Set 2026)")
+            caption = "📸 Твой персональный образ 2026" if face_url else "📸 Стилизация образа"
+            await update.message.reply_photo(img_url, caption=caption)
+        else:
+            await update.message.reply_text("Ошибка генерации.")
         return
 
-    # ОБЫЧНАЯ ЛОГИКА (ТРЕНДЫ, СПОРТ И Т.Д.)
-    await update.message.reply_chat_action(constants.ChatAction.TYPING)
-    if user_id not in user_histories:
-        user_histories[user_id] = [{"role": "system", "content": STYLIST_PERSONALITY}]
-    
-    user_histories[user_id].append({"role": "user", "content": text})
-    bot_response = await loop.run_in_executor(executor, _simple_text_gen, user_histories[user_id])
-    
-    await update.message.reply_text(bot_response, parse_mode="Markdown" if "*" in bot_response else None)
-    
-    # Авто-фото для спорта или при упоминании фото
-    if any(kw in text.lower() for kw in ["фото", "образ", "style"]) or context.user_data.get('mode') == 'sport':
-        await update.message.reply_chat_action(constants.ChatAction.UPLOAD_PHOTO)
-        img_url = await loop.run_in_executor(executor, _generate_image_sync, f"Caucasian European model, fashion photography, {bot_response[:200]}")
-        if img_url:
-            await update.message.reply_photo(img_url, caption="🎬 Визуализация лука")
-
-# (Функции handle_photo и прочие остаются из предыдущих версий)
+    # Обычный ответ
+    res = await loop.run_in_executor(executor, _simple_text_gen, [{"role": "user", "content": text}])
+    await update.message.reply_text(res)
 
 if __name__ == "__main__":
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
-    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("start", start if 'start' in locals() else None))
+    app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
-    # Не забудь добавить app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
-    print("🚀 Режим Съемки активирован!")
+    print("🚀 Бот с поддержкой Face-Reference запущен!")
     app.run_polling()
