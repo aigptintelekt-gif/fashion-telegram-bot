@@ -70,49 +70,42 @@ def _generate_text_sync(messages):
         return "Прости, произошла ошибка при генерации ответа."
 
 
-import dashscope
-from dashscope import ImageSynthesis
-
 import requests
 import json
 import time
+from http import HTTPStatus
+from dashscope import ImageSynthesis
+import dashscope
+import os
 
 def _generate_image_sync(prompt):
+    # Настройка региона Сингапур (Intl)
+    dashscope.base_http_api_url = 'https://dashscope-intl.aliyuncs.com/api/v1'
     api_key = os.getenv("DASHSCOPE_API_KEY")
-    # Правильный международный URL для создания задачи
-    url = "https://dashscope-intl.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation"
     
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json" # Включаем асинхронный режим
-    }
-    
-    payload = {
-        "model": "wan2.6-image",
-        "input": {"prompt": prompt},
-        "parameters": {"n": 1, "size": "1024*1024"}
-    }
+    logger.info(f"Запуск генерации через SDK (qwen-image-plus): {prompt[:30]}...")
 
     try:
-        logger.info(f"Отправка прямого запроса к API Intl... Prompt: {prompt[:30]}...")
-        response = requests.post(url, headers=headers, data=json.dumps(payload))
-        
-        if response.status_code != 200:
-            logger.error(f"Ошибка API: {response.status_code} - {response.text}")
-            return None
-            
-        result = response.json()
-        # В синхронном ответе ссылка лежит здесь:
-        image_url = result.get("output", {}).get("results", [{}])[0].get("url")
-        
-        if image_url:
-            logger.info(f"Изображение готово: {image_url}")
+        rsp = ImageSynthesis.call(
+            api_key=api_key,
+            model="qwen-image-plus",  # Используем выбранную вами модель
+            prompt=prompt,
+            n=1,
+            size='1024*1024', # Рекомендуемый квадратный размер
+            prompt_extend=True
+        )
+
+        if rsp.status_code == HTTPStatus.OK:
+            # Вместо скачивания файла, просто возвращаем URL первой картинки
+            image_url = rsp.output.results[0].url
+            logger.info(f"Изображение успешно создано: {image_url}")
             return image_url
-        
-        logger.error(f"Не удалось найти URL в ответе: {result}")
-        return None
+        else:
+            logger.error(f"Ошибка SDK: {rsp.status_code}, code: {rsp.code}, message: {rsp.message}")
+            return None
+
     except Exception as e:
-        logger.error(f"Ошибка в генерации: {e}")
+        logger.error(f"Критическая ошибка при вызове SDK: {e}")
         return None
 # --- ОБРАБОТЧИКИ TELEGRAM ---
 
