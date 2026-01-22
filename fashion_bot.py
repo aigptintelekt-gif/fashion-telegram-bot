@@ -80,7 +80,7 @@ import time
 def _generate_image_sync(prompt):
     api_key = os.getenv("DASHSCOPE_API_KEY")
     # Правильный международный URL для создания задачи
-    url = "https://dashscope-intl.aliyuncs.com/api/v1/services/aigc/text2image/image-synthesis"
+    url = "https://dashscope-intl.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation"
     
     headers = {
         "Authorization": f"Bearer {api_key}",
