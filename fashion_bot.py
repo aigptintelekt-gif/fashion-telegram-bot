@@ -113,45 +113,62 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
     loop = asyncio.get_running_loop()
 
+    # 1. Сброс состояния
     if text == '🧠 Сброс':
         user_faces[user_id] = None
         user_pending_prompts[user_id] = None
-        await update.message.reply_text("🧼 Память бота успешно очищена.", reply_markup=get_main_menu())
+        await update.message.reply_text("🧼 Память бота очищена.", reply_markup=get_main_menu())
         return
 
-    # Интерактив для новостей и трендов
+    # 2. Обработка кнопок основного меню (Тренды, Новости и т.д.)
     if text in ['🚀 Тренды 2026', '🏃 Спорт-Эксперт', '🗞 Новости моды', '👔 Одень меня']:
+        user_pending_prompts[user_id] = None # Сбрасываем ожидание промпта, если нажата кнопка меню
         await update.message.reply_chat_action(constants.ChatAction.TYPING)
+        
         current_date = "22 января 2026 года"
         prompt_map = {
-            '🚀 Тренды 2026': f"Напиши главные тренды моды на сегодня {current_date}. Пиши простым текстом без спецсимволов.",
-            '🏃 Спорт-Эксперт': f"Совет по спортивной одежде на {current_date}. Без разметки.",
-            '🗞 Новости моды': f"Свежие новости моды на сегодня {current_date}. Без символов Markdown.",
-            '👔 Одень меня': f"Стильный образ на {current_date}. Чистый текст."
+            '🚀 Тренды 2026': f"Напиши тренды моды на {current_date}.",
+            '🏃 Спорт-Эксперт': f"Совет по экипировке на {current_date}.",
+            '🗞 Новости моды': f"Свежие новости моды на {current_date}.",
+            '👔 Одень меня': f"Стильный образ на {current_date}."
         }
+        
         messages = [
-            {"role": "system", "content": "Ты модный эксперт 2026. Запрещено использовать символы разметки: *, #, _. Пиши простым текстом."},
+            {"role": "system", "content": "Ты эксперт моды. Пиши кратко, без спецсимволов разметки."},
             {"role": "user", "content": prompt_map[text]}
         ]
         raw_res = await loop.run_in_executor(executor, _simple_text_gen, messages)
         await update.message.reply_text(_clean_text(raw_res))
         return
 
-    # Логика генерации фото
+    # 3. ЛОГИКА ГЕНЕРАЦИИ ФОТО (Исправлено: теперь это приоритет)
     if text == '🎨 Создать промпт + Фото' or user_pending_prompts.get(user_id) == "WAITING":
         if text == '🎨 Создать промпт + Фото':
             user_pending_prompts[user_id] = "WAITING"
-            await update.message.reply_text("📽 **Режим режиссера включен.**\nОпишите задумку кадра (локация, одежда, свет):")
+            await update.message.reply_text("📽 **Режим фото-генерации активен.**\nВведите описание образа (например: 'девушка в неоновом платье'):")
             return
 
+        # Если мы здесь, значит user_pending_prompts[user_id] == "WAITING"
+        # Обрабатываем введенный текст как описание для нейросети
         await update.message.reply_chat_action(constants.ChatAction.TYPING)
-        magic_msg = [{"role": "system", "content": "You are a Creative Director. Convert to detailed English fashion prompt."}, {"role": "user", "content": text}]
+        await update.message.reply_text("🧠 *Превращаю вашу идею в профессиональный промпт...*", parse_mode="Markdown")
+        
+        magic_msg = [
+            {"role": "system", "content": "You are a Creative Director. Strictly convert user idea to a detailed English fashion prompt for image generation. Do not say you are a text model."},
+            {"role": "user", "content": text}
+        ]
         refined = await loop.run_in_executor(executor, _simple_text_gen, magic_msg)
-        user_pending_prompts[user_id] = refined
-        await update.message.reply_text(f"✨ **Стилизованный промпт:**\n`{refined}`", parse_mode="Markdown", reply_markup=get_size_keyboard())
+        
+        # Сохраняем готовый английский промпт и предлагаем размеры
+        user_pending_prompts[user_id] = refined 
+        await update.message.reply_text(
+            f"✨ **Промпт для нейросети готов:**\n\n`{refined}`", 
+            parse_mode="Markdown", 
+            reply_markup=get_size_keyboard()
+        )
         return
 
-    # Обычный ответ чата
+    # 4. Обычный чат (только если не ждем промпт для фото)
     await update.message.reply_chat_action(constants.ChatAction.TYPING)
     res = await loop.run_in_executor(executor, _simple_text_gen, [{"role": "user", "content": text}])
     await update.message.reply_text(_clean_text(res))
