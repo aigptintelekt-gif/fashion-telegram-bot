@@ -84,8 +84,7 @@ def _generate_image_sync(prompt):
     
     headers = {
         "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json",
-        "X-DashScope-Async": "enable"  # Включаем асинхронный режим
+        "Content-Type": "application/json" # Включаем асинхронный режим
     }
     
     payload = {
