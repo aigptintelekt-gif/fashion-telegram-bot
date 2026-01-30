@@ -155,29 +155,59 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     # 3. Новости моды
+    async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # ... (код выше без изменений)
+
     if text == '🗞 Новости моды':
         await update.message.reply_chat_action(constants.ChatAction.TYPING)
-        
         loading_msg = await update.message.reply_text(
-            "🔄 *Собираю свежие новости...*\n⏱ Это займет 15-20 секунд...",
+            "🔄 *Парсинг источников и создание дайджеста...*\nЭто займет немного больше времени.",
             parse_mode="Markdown"
         )
         
         try:
-            # Получаем новости (с кэшированием)
-            news = await loop.run_in_executor(executor, get_fashion_news)
+            # 1. Получаем сырые данные из вашего парсера
+            raw_news = await loop.run_in_executor(executor, get_fashion_news)
             
-            # Форматируем и отправляем
-            news_message = format_news_message(news)
+            if not raw_news:
+                await loading_msg.edit_text("😢 Новостей пока нет, попробуйте позже.")
+                return
+
+            # 2. Формируем запрос для Qwen для перевода и описания
+            # Передаем только заголовки и источники, чтобы сэкономить токены и время
+            news_context = "\n".join([f"- {n['source']}: {n['title']}" for n in raw_news])
+            
+            summary_prompt = [
+                {"role": "system", "content": "Ты — фэшн-аналитик. Я дам тебе список заголовков новостей. "
+                                             "Твоя задача: кратко (1-2 предложения) описать суть каждой новости на РУССКОМ языке. "
+                                             "Будь экспертным, используй проф. терминологию. Выдавай только текст описаний."},
+                {"role": "user", "content": f"Опиши кратко эти новости моды:\n{news_context}"}
+            ]
+            
+            # Генерируем краткие описания
+            summaries = await loop.run_in_executor(executor, _simple_text_gen, summary_prompt)
+            
+            # 3. Формируем итоговое сообщение (красиво соединяем ссылки и описания)
+            # Чтобы не усложнять парсер, мы можем просто отправить результат от ИИ 
+            # или сопоставить их. Самый надежный способ — попросить ИИ сразу вернуть готовый текст со ссылками.
+            
+            final_prompt = [
+                {"role": "system", "content": "Сформируй итоговый дайджест. Для каждой новости: "
+                                             "1. Заголовок (на русском). "
+                                             "2. Краткое описание (1-2 предложения). "
+                                             "3. Источник и ссылка. "
+                                             "Используй Markdown. Разделяй новости линиями."},
+                {"role": "user", "content": f"Данные для обработки:\n{json.dumps(raw_news, ensure_ascii=False)}"}
+            ]
+            
+            final_report = await loop.run_in_executor(executor, _simple_text_gen, final_prompt)
+            
             await loading_msg.delete()
-            await update.message.reply_text(news_message, parse_mode="Markdown", disable_web_page_preview=False)
+            await update.message.reply_text(final_report, parse_mode="Markdown", disable_web_page_preview=False)
             
         except Exception as e:
-            await loading_msg.delete()
-            await update.message.reply_text(
-                f"❌ *Ошибка при загрузке новостей:*\n{str(e)}\n\nПопробуйте позже.",
-                parse_mode="Markdown"
-            )
+            logger.error(f"Ошибка в дайджесте: {e}")
+            await loading_msg.edit_text("❌ Ошибка при генерации описаний.")
         return
 
     # 4. Другие кнопки меню
