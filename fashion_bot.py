@@ -1,6 +1,7 @@
 """
 Fashion Director 2026 — Telegram бот
 """
+import requests
 import logging
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
