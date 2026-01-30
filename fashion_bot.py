@@ -83,7 +83,7 @@ def _generate_image_direct(prompt, size, base_face_url=None):
 
 def _simple_text_gen(messages):
     try:
-        res = client.chat.completions.create(model="qwen-plus", messages=messages)
+        res = client.chat.completions.create(model="qwen3-max-2026-01-23", messages=messages)
         return res.choices[0].message.content
     except Exception as e:
         return f"Ошибка: {str(e)}"
