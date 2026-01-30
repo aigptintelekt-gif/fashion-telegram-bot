@@ -1,46 +1,48 @@
-import os
+"""
+Fashion Director 2026 — Telegram бот
+"""
 import logging
 import asyncio
-import requests
 from concurrent.futures import ThreadPoolExecutor
-from dotenv import load_dotenv
 from openai import OpenAI
 
 # Telegram
 from telegram import Update, constants, ReplyKeyboardMarkup, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
 
-# --- КОНФИГУРАЦИЯ ---
-load_dotenv()
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-DASHSCOPE_API_KEY = os.getenv("DASHSCOPE_API_KEY")
+# Модули проекта
+from config import *
+from news_parser import get_fashion_news, format_news_message, get_cache_info
 
-logging.basicConfig(format='%(asctime)s - %(levelname)s - %(message)s', level=logging.INFO)
+# Логирование
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=getattr(logging, LOG_LEVEL)
+)
 logger = logging.getLogger(__name__)
+
+# ThreadPool для асинхронных операций
 executor = ThreadPoolExecutor(max_workers=4)
 
+# Инициализация OpenAI клиента
 client = OpenAI(
     api_key=DASHSCOPE_API_KEY,
-    base_url="https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
+    base_url=DASHSCOPE_BASE_URL
 )
 
-user_faces = {} 
+# Глобальные переменные пользователя
+user_faces = {}
 user_pending_prompts = {}
 last_generated_images = {}
 
-# --- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ---
-
-def _clean_text(text):
-    """Очистка текста от Markdown символов для чистого вывода"""
-    chars_to_remove = ['*', '#', '_', '`', '---']
-    for char in chars_to_remove:
-        text = text.replace(char, '')
-    return text.strip()
-
-# --- КЛАВИАТУРЫ ---
+# ==================== КЛАВИАТУРЫ ====================
 
 def get_main_menu():
-    keyboard = [['🚀 Тренды 2026', '🏃 Спорт-Эксперт'], ['🎨 Создать промпт + Фото', '🗞 Новости моды'], ['👔 Одень меня', '🧠 Сброс']]
+    keyboard = [
+        ['🚀 Тренды 2026', '🏃 Спорт-Эксперт'],
+        ['🎨 Создать промпт + Фото', '🗞 Новости моды'],
+        ['👔 Одень меня', '🧠 Сброс']
+    ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
 def get_size_keyboard():
@@ -59,10 +61,17 @@ def get_upscale_keyboard():
     ]
     return InlineKeyboardMarkup(keyboard)
 
-# --- ЛОГИКА API ---
+# ==================== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ====================
+
+def _clean_text(text):
+    """Очистка текста от Markdown символов"""
+    chars_to_remove = ['*', '#', '_', '`', '---']
+    for char in chars_to_remove:
+        text = text.replace(char, '')
+    return text.strip()
 
 def _generate_image_direct(prompt, size, base_face_url=None):
-    url = "https://dashscope-intl.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation"
+    """Генерация изображения через API"""
     headers = {"Content-Type": "application/json", "Authorization": f"Bearer {DASHSCOPE_API_KEY}"}
     content = [{"text": f"{prompt}, European appearance, high fashion photography, highly detailed"}]
     if base_face_url:
@@ -73,7 +82,7 @@ def _generate_image_direct(prompt, size, base_face_url=None):
         "parameters": {"prompt_extend": True, "watermark": False, "n": 1, "size": size}
     }
     try:
-        response = requests.post(url, headers=headers, json=data, timeout=120)
+        response = requests.post(IMAGE_API_URL, headers=headers, json=data, timeout=120)
         res_json = response.json()
         if response.status_code == 200:
             return {"url": res_json["output"]["choices"][0]["message"]["content"][0]["image"], "error": None}
@@ -82,13 +91,14 @@ def _generate_image_direct(prompt, size, base_face_url=None):
         return {"url": None, "error": str(e)}
 
 def _simple_text_gen(messages):
+    """Генерация текста через LLM"""
     try:
         res = client.chat.completions.create(model="qwen3-max-2026-01-23", messages=messages)
         return res.choices[0].message.content
     except Exception as e:
         return f"Ошибка: {str(e)}"
 
-# --- ОБРАБОТЧИКИ ---
+# ==================== ОБРАБОТЧИКИ ====================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     welcome_text = (
@@ -97,7 +107,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "📸 **Генерация образов:** Создам фото с вашим лицом в любом стиле.\n"
         "📈 **Тренды:** Расскажу о самых свежих новинках индустрии.\n"
         "🏃 **Спорт:** Подберу технологичную экипировку.\n"
-        "👔 **Стилист:** Составлю идеальный лук по вашему описанию.\n\n"
+        "👔 **Стилист:** Составлю идеальный лук по вашему описанию.\n"
+        "🗞 **Новости моды:** Парсинг 8 мировых источников с кэшированием!\n\n"
         "👉 *Выберите действие в меню ниже!*"
     )
     await update.message.reply_text(welcome_text, parse_mode="Markdown", reply_markup=get_main_menu())
@@ -105,7 +116,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_chat_action(constants.ChatAction.TYPING)
     photo_file = await update.message.photo[-1].get_file()
-    user_faces[update.effective_user.id] = photo_file.file_path 
+    user_faces[update.effective_user.id] = photo_file.file_path
     await update.message.reply_text("👤 **Face-ID успешно зафиксирован!**\nТеперь ваши генерации будут персонализированы.")
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -113,35 +124,28 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
     loop = asyncio.get_running_loop()
 
-    # 1. Выход из режима (всегда доступен)
+    # 1. Выход из режима
     if text in ['🧠 Сброс', '🏠 Главное меню', '❌ Отмена']:
         user_pending_prompts[user_id] = None
         await update.message.reply_text(
-            "🏠 Вы вернулись в главное меню. О чем хотите узнать?", 
+            "🏠 Вы вернулись в главное меню. О чем хотите узнать?",
             reply_markup=get_main_menu()
         )
         return
 
-    # 2. ПРОВЕРКА: Находится ли пользователь в режиме генерации?
-    # Мы проверяем, если статус "WAITING" или если в памяти уже есть готовый промпт (значит он в процессе)
+    # 2. Режим генерации
     is_generating = user_pending_prompts.get(user_id) is not None
-
     if is_generating:
-        # Если пользователь ввел новый текст, значит он хочет новую картинку
         await update.message.reply_chat_action(constants.ChatAction.TYPING)
-        
-        # Специальное меню для режима генерации
         gen_kb = ReplyKeyboardMarkup([['🏠 Главное меню']], resize_keyboard=True)
-        
         await update.message.reply_text("🧠 *Стилизую ваш новый запрос...*", parse_mode="Markdown", reply_markup=gen_kb)
         
         magic_msg = [
             {"role": "system", "content": "You are a Fashion Prompt Generator. Translate and enhance the user's idea into a detailed English prompt. Output ONLY the prompt."},
             {"role": "user", "content": text}
         ]
-        
         refined = await loop.run_in_executor(executor, _simple_text_gen, magic_msg)
-        user_pending_prompts[user_id] = refined # Обновляем текущий промпт
+        user_pending_prompts[user_id] = refined
         
         await update.message.reply_text(
             f"✨ **Новый образ готов к рендеру:**\n\n`{refined}`",
@@ -150,10 +154,35 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # 3. Обработка кнопок меню (Тренды, Новости и т.д.)
-    if text in ['🚀 Тренды 2026', '🏃 Спорт-Эксперт', '🗞 Новости моды', '👔 Одень меня']:
+    # 3. Новости моды
+    if text == '🗞 Новости моды':
         await update.message.reply_chat_action(constants.ChatAction.TYPING)
-        # ... (здесь ваш существующий код обработки новостей) ...
+        
+        loading_msg = await update.message.reply_text(
+            "🔄 *Собираю свежие новости...*\n⏱ Это займет 15-20 секунд...",
+            parse_mode="Markdown"
+        )
+        
+        try:
+            # Получаем новости (с кэшированием)
+            news = await loop.run_in_executor(executor, get_fashion_news)
+            
+            # Форматируем и отправляем
+            news_message = format_news_message(news)
+            await loading_msg.delete()
+            await update.message.reply_text(news_message, parse_mode="Markdown", disable_web_page_preview=False)
+            
+        except Exception as e:
+            await loading_msg.delete()
+            await update.message.reply_text(
+                f"❌ *Ошибка при загрузке новостей:*\n{str(e)}\n\nПопробуйте позже.",
+                parse_mode="Markdown"
+            )
+        return
+
+    # 4. Другие кнопки меню
+    if text in ['🚀 Тренды 2026', '🏃 Спорт-Эксперт', '👔 Одень меня']:
+        await update.message.reply_chat_action(constants.ChatAction.TYPING)
         messages = [
             {"role": "system", "content": "Ты эксперт моды 2026. Пиши простым текстом без разметки."},
             {"role": "user", "content": text}
@@ -162,7 +191,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(_clean_text(raw_res))
         return
 
-    # 4. Вход в режим генерации
+    # 5. Вход в режим генерации
     if text == '🎨 Создать промпт + Фото':
         user_pending_prompts[user_id] = "WAITING"
         gen_kb = ReplyKeyboardMarkup([['🏠 Главное меню']], resize_keyboard=True)
@@ -173,7 +202,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Введите описание вашего первого образа:")
         return
 
-    # 5. Обычный чат
+    # 6. Обычный чат
     await update.message.reply_chat_action(constants.ChatAction.TYPING)
     res = await loop.run_in_executor(executor, _simple_text_gen, [{"role": "user", "content": text}])
     await update.message.reply_text(_clean_text(res))
@@ -196,7 +225,11 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         if result["url"]:
             last_generated_images[user_id] = result["url"]
-            await query.message.reply_photo(result["url"], caption=f"📸 **Ваш эксклюзивный кадр готов!**\nЖелаете улучшить детализацию?", reply_markup=get_upscale_keyboard())
+            await query.message.reply_photo(
+                result["url"],
+                caption=f"📸 **Ваш эксклюзивный кадр готов!**\nЖелаете улучшить детализацию?",
+                reply_markup=get_upscale_keyboard()
+            )
         else:
             await query.message.reply_text(f"❌ **Упс! Что-то пошло не так:**\n{result['error']}")
 
@@ -207,11 +240,16 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         img_url = last_generated_images.get(user_id)
         await query.message.reply_document(img_url, caption=f"✨ **Премиум качество {mode.upper()}**")
 
+# ==================== ЗАПУСК ====================
+
 if __name__ == "__main__":
+    logger.info("🚀 Запуск Fashion Director 2026...")
+    
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(callback_handler))
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
-    print("🚀 Бот Fashion Director 2026 запущен!")
+    
+    logger.info("✅ Бот запущен и готов к работе!")
     app.run_polling()
