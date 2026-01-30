@@ -73,7 +73,7 @@ def _simple_text_gen(messages):
     """Универсальная функция для общения с LLM"""
     try:
         res = client.chat.completions.create(
-            model="qwen-vl-max",  # Или ваша актуальная модель в DashScope
+            model="qwen2.5-omni-7b",  # Или ваша актуальная модель в DashScope
             messages=messages
         )
         return res.choices[0].message.content
